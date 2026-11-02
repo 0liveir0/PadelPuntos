@@ -69,8 +69,10 @@
                 android:layout_weight="1.4"
                 android:orientation="vertical">
                 <TextView
+                    android:id="@+id/nameA"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:maxLines="2"
                     android:text="✊ EQUIPO A"
                     android:textColor="#FFFFFF"
                     android:textSize="20sp"
@@ -120,8 +122,10 @@
                 android:layout_weight="1.4"
                 android:orientation="vertical">
                 <TextView
+                    android:id="@+id/nameB"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:maxLines="2"
                     android:text="✋ EQUIPO B"
                     android:textColor="#FFFFFF"
                     android:textSize="20sp"
@@ -167,11 +171,11 @@
                 android:text="↶ Deshacer"
                 android:textSize="13sp" />
             <Button
-                android:id="@+id/golden"
+                android:id="@+id/settings"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Punto oro: NO"
+                android:text="⚙ Ajustes"
                 android:textSize="13sp" />
             <Button
                 android:id="@+id/voice"

@@ -10,8 +10,8 @@ android {
         applicationId = "com.padelpuntos.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -35,16 +35,20 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
 }
 
-// Descarga automática del modelo de gestos de MediaPipe (puño / palma, etc.)
-val modelFile = file("src/main/assets/gesture_recognizer.task")
-val downloadModel by tasks.registering {
-    outputs.file(modelFile)
+// Descarga automática de los modelos de MediaPipe (gestos de mano y postura corporal)
+val models = mapOf(
+    "gesture_recognizer.task" to "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task",
+    "pose_landmarker_lite.task" to "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+)
+val assetsDir = file("src/main/assets")
+val downloadModels by tasks.registering {
+    outputs.dir(assetsDir)
     doLast {
-        if (!modelFile.exists()) {
-            modelFile.parentFile.mkdirs()
-            uri("https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task")
-                .toURL().openStream().use { input -> modelFile.outputStream().use { input.copyTo(it) } }
+        assetsDir.mkdirs()
+        models.forEach { (name, url) ->
+            val f = File(assetsDir, name)
+            if (!f.exists()) uri(url).toURL().openStream().use { i -> f.outputStream().use { i.copyTo(it) } }
         }
     }
 }
-tasks.named("preBuild") { dependsOn(downloadModel) }
+tasks.named("preBuild") { dependsOn(downloadModels) }

@@ -13,6 +13,7 @@ data class MatchState(
 
 class PadelMatch {
     var goldenPoint = false
+    var names = arrayOf("Equipo A", "Equipo B")
     var state = MatchState()
         private set
     private val history = ArrayDeque<MatchState>()
@@ -83,7 +84,5 @@ class PadelMatch {
         return if (a == b) "${words[a]} iguales" else "${words[a]}, ${words[b]}"
     }
 
-    companion object {
-        fun teamName(t: Int) = if (t == 0) "equipo A" else "equipo B"
-    }
+    fun teamName(t: Int) = names[t]
 }
