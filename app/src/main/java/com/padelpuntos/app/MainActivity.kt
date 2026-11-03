@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         const val MIN_VIS = 0.5f       // visibilidad mínima de muñeca/hombro
         const val FIST = "Closed_Fist"
         const val PALM = "Open_Palm"
+        const val THUMB_DOWN = "Thumb_Down"
+        const val UNDO = 2             // código interno del gesto "deshacer"
 
         // Índices de MediaPipe Pose (izquierda/derecha del propio jugador)
         const val NOSE = 0
@@ -105,9 +107,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         findViewById<View>(R.id.teamA).setOnClickListener { addPoint(0) }
         findViewById<View>(R.id.teamB).setOnClickListener { addPoint(1) }
-        findViewById<Button>(R.id.undo).setOnClickListener {
-            if (match.undo()) { render(); say("Punto anulado") }
-        }
+        findViewById<Button>(R.id.undo).setOnClickListener { undoLast() }
         findViewById<Button>(R.id.reset).setOnClickListener {
             AlertDialog.Builder(this)
                 .setMessage("¿Empezar un partido nuevo?")
@@ -227,16 +227,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun hintText() =
-        if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}"
-        else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}"
+        if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}  ·  ❌ brazos cruzados = deshacer"
+        else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}  ·  👎 = deshacer"
 
-    /** 0 = A, 1 = B, -1 = nada o gestos contradictorios. */
+    /** 0 = A, 1 = B, 2 = deshacer, -1 = nada o gestos contradictorios. */
     private fun handsToTeam(result: GestureRecognizerResult): Int {
         var seen = -1
         for (hand in result.gestures()) {
             val top = hand.firstOrNull() ?: continue
             if (top.score() < MIN_SCORE) continue
-            val t = when (top.categoryName()) { FIST -> 0; PALM -> 1; else -> -1 }
+            val t = when (top.categoryName()) { FIST -> 0; PALM -> 1; THUMB_DOWN -> UNDO; else -> -1 }
             if (t == -1) continue
             if (seen != -1 && seen != t) return -1
             seen = t
@@ -249,6 +249,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var seen = -1
         for (pose in result.landmarks()) {
             if (pose.size < 17) continue
+            if (crossedUp(pose)) {
+                if (seen != -1 && seen != UNDO) return -1
+                seen = UNDO; continue
+            }
             val left = raised(pose, L_WRIST, L_SHOULDER, pose[NOSE])
             val right = raised(pose, R_WRIST, R_SHOULDER, pose[NOSE])
             val t = when {
@@ -271,6 +275,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val torso = kotlin.math.abs(pose[L_SHOULDER].x() - pose[R_SHOULDER].x()).coerceAtLeast(0.03f)
         // y crece hacia abajo: la muñeca debe quedar claramente por encima del hombro y por encima de la nariz
         return w.y() < s.y() - torso * 0.8f && w.y() < nose.y()
+    }
+
+    /**
+     * Brazos cruzados en X por encima de los hombros (gesto japonés de "no").
+     * Cruzado = las muñecas quedan en lado contrario al de sus hombros; funciona con cámara frontal o trasera.
+     */
+    private fun crossedUp(pose: List<NormalizedLandmark>): Boolean {
+        val lw = pose[L_WRIST]; val rw = pose[R_WRIST]; val ls = pose[L_SHOULDER]; val rs = pose[R_SHOULDER]
+        if (listOf(lw, rw, ls, rs).any { vis(it) < MIN_VIS }) return false
+        val torso = kotlin.math.abs(ls.x() - rs.x()).coerceAtLeast(0.03f)
+        val bothUp = lw.y() < ls.y() - torso * 0.3f && rw.y() < rs.y() - torso * 0.3f
+        val crossed = (lw.x() - rw.x()) * (ls.x() - rs.x()) < 0
+        return bothUp && crossed
     }
 
     private fun startCamera() {
@@ -324,7 +341,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val held = now - candidateSince
         progress.progress = ((held * 100) / HOLD_MS).toInt().coerceAtMost(100)
         if (held >= HOLD_MS) {
-            addPoint(candidate)
+            if (candidate == UNDO) undoLast() else addPoint(candidate)
             cooldownUntil = now + COOLDOWN_MS
             needRelease = true
             candidate = -1
@@ -341,6 +358,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         vibrate()
         say(msg)
         Toast.makeText(this, "Punto para ${match.names[team]}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun undoLast() {
+        if (match.undo()) {
+            render()
+            tone.startTone(ToneGenerator.TONE_PROP_NACK, 300)
+            vibrate()
+            say("Punto anulado. " + match.spokenPoints())
+            Toast.makeText(this, "↶ Punto anulado", Toast.LENGTH_SHORT).show()
+        } else {
+            say("No hay nada que deshacer")
+        }
     }
 
     private fun render() {

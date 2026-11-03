@@ -7,6 +7,7 @@ Marcador de pádel para Android que suma puntos por gestos ante la cámara. En *
   - ✊ Puño cerrado = equipo A · ✋ Palma abierta = equipo B
   - Brazo **izquierdo** levantado = equipo A · Brazo **derecho** levantado = equipo B
     (izquierdo/derecho del propio jugador, con la muñeca por encima de la cabeza)
+- **Deshacer el último punto**: ❌ brazos cruzados en X por encima de los hombros (modo brazos) o 👎 pulgar abajo (modo mano).
 - **Punto de oro** (sin ventajas).
 
 El gesto hay que mantenerlo ~1 s. Tras cada punto hay 2,5 s de pausa y hay que bajar la mano/brazo antes del siguiente.
