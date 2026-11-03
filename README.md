@@ -14,6 +14,7 @@ También se puede sumar tocando la franja de cada equipo, y deshacer con el bot�
 ## Partidos
 - **Nuevo**: se introducen los 2 jugadores de cada pareja (con autocompletado), alias opcional y punto de oro.
 - El partido se **guarda tras cada punto**. Si se cierra la app, al volver pregunta si continuarlo.
+- **⏹ Terminar**: cierra el partido en ese momento y lo guarda como **inacabado** con el marcador actual.
 - Si se empieza otro sin terminar el actual, el anterior queda guardado como **inacabado** y también cuenta.
 - **📊 Historial**: lista de partidos (mantener pulsado para borrar), estadísticas por jugador con **ELO**, y **Exportar CSV**.
 

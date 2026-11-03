@@ -116,7 +116,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         findViewById<View>(R.id.teamB).setOnClickListener { addPoint(1, "toque") }
         findViewById<Button>(R.id.undo).setOnClickListener { undoLast() }
         findViewById<Button>(R.id.reset).setOnClickListener {
-            if (current != null && !match.state.finished && match.events.isNotEmpty()) {
+            if (current?.status == "en_curso" && match.events.isNotEmpty()) {
                 AlertDialog.Builder(this)
                     .setMessage("El partido actual se guardará como INACABADO. ¿Empezar otro?")
                     .setPositiveButton("Sí") { _, _ -> showNewMatchDialog() }
@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             } else showNewMatchDialog()
         }
         findViewById<Button>(R.id.settings).setOnClickListener { showSettings() }
+        findViewById<Button>(R.id.finish).setOnClickListener { askFinish() }
         findViewById<Button>(R.id.history).setOnClickListener {
             startActivity(Intent(this, HistoryActivity::class.java))
         }
@@ -173,6 +174,32 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         r.end = r.points.last().time
         store.save(r)
     }
+
+    /** Cierra el partido en curso ahora mismo, aunque no esté acabado: queda guardado como "inacabado". */
+    private fun askFinish() {
+        val r = current
+        when {
+            r == null -> showNewMatchDialog()
+            r.status == "terminado" -> Toast.makeText(this, "Este partido ya está terminado", Toast.LENGTH_SHORT).show()
+            r.status == "inacabado" -> Toast.makeText(this, "Este partido ya está cerrado. Pulsa Nuevo para empezar otro", Toast.LENGTH_LONG).show()
+            match.events.isEmpty() -> AlertDialog.Builder(this)
+                .setMessage("No hay ningún punto jugado. ¿Descartar este partido y empezar otro?")
+                .setPositiveButton("Sí") { _, _ -> showNewMatchDialog() }
+                .setNegativeButton("No", null).show()
+            else -> AlertDialog.Builder(this)
+                .setTitle("Terminar partido")
+                .setMessage("Se guardará como INACABADO con el marcador actual:\n\n${MatchSummary(r).result.ifEmpty { "0-0" }}  (${match.pointLabel(0)}-${match.pointLabel(1)})")
+                .setPositiveButton("Terminar") { _, _ ->
+                    closeAsUnfinished(r)
+                    render()
+                    say("Partido terminado")
+                    Toast.makeText(this, "Partido guardado como inacabado", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancelar", null).show()
+        }
+    }
+
+    private fun isClosed() = current?.status == "inacabado"
 
     /** Guarda el partido actual tras cada punto o deshacer. */
     private fun persist() {
@@ -455,7 +482,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     // ---------- Marcador ----------
 
     private fun addPoint(team: Int, source: String) {
-        if (match.state.finished) { say("El partido ha terminado. Pulsa Nuevo para empezar otro"); return }
+        if (match.state.finished || isClosed()) { say("El partido ha terminado. Pulsa Nuevo para empezar otro"); return }
         val msg = match.point(team, source)
         persist()
         render()
@@ -466,6 +493,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun undoLast() {
+        if (isClosed()) { say("El partido está cerrado. Pulsa Nuevo para empezar otro"); return }
         if (match.undo()) {
             persist()
             render()
@@ -494,6 +522,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         findViewById<TextView>(R.id.setsB).text = "Sets: ${s.sets[1]}" + if (histB.isNotEmpty()) "  ($histB)" else ""
         findViewById<TextView>(R.id.header).text = when {
             s.finished -> "🏆 GANA ${match.names[s.winner].uppercase()}"
+            isClosed() -> "⏹ PARTIDO TERMINADO (INACABADO)"
             s.tiebreak -> "TIE-BREAK · JUEGOS · PUNTOS"
             match.goldenPoint -> "PUNTO DE ORO · JUEGOS · PUNTOS"
             else -> "JUEGOS · PUNTOS"

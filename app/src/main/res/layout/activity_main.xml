@@ -171,12 +171,24 @@
                 android:text="↶ Deshacer"
                 android:textSize="13sp" />
             <Button
-                android:id="@+id/settings"
+                android:id="@+id/finish"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="⚙ Ajustes"
+                android:text="⏹ Terminar"
                 android:textSize="13sp" />
+            <Button
+                android:id="@+id/reset"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Nuevo"
+                android:textSize="13sp" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
             <Button
                 android:id="@+id/history"
                 android:layout_width="0dp"
@@ -192,11 +204,11 @@
                 android:text="Cámara"
                 android:textSize="13sp" />
             <Button
-                android:id="@+id/reset"
+                android:id="@+id/settings"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Nuevo"
+                android:text="⚙ Ajustes"
                 android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>
