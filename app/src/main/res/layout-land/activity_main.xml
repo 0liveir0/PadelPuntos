@@ -178,11 +178,11 @@
                 android:text="⚙ Ajustes"
                 android:textSize="13sp" />
             <Button
-                android:id="@+id/voice"
+                android:id="@+id/history"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Voz: SÍ"
+                android:text="📊 Historial"
                 android:textSize="13sp" />
             <Button
                 android:id="@+id/flip"
@@ -196,7 +196,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Reiniciar"
+                android:text="Nuevo"
                 android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>

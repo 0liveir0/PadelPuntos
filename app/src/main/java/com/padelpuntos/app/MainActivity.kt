@@ -3,6 +3,7 @@ package com.padelpuntos.app
 import android.Manifest
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
@@ -16,6 +17,8 @@ import android.os.Vibrator
 import android.speech.tts.TextToSpeech
 import android.text.InputType
 import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.AutoCompleteTextView
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -55,6 +58,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var voiceOn = true
         var armMode = false            // false = puño/palma, true = brazo izquierdo/derecho
         var prefsLoaded = false
+        var lastGolden = false
+        lateinit var store: MatchStore
+        var current: MatchRecord? = null
 
         const val HOLD_MS = 1000L      // tiempo que hay que mantener el gesto
         const val COOLDOWN_MS = 2500L  // pausa tras sumar un punto
@@ -97,7 +103,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        if (!prefsLoaded) { loadPrefs(); prefsLoaded = true }
+        val firstStart = !prefsLoaded
+        if (firstStart) { loadPrefs(); store = MatchStore(filesDir); prefsLoaded = true }
 
         preview = findViewById(R.id.preview)
         status = findViewById(R.id.status)
@@ -105,17 +112,21 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         executor = Executors.newSingleThreadExecutor()
         tts = TextToSpeech(this, this)
 
-        findViewById<View>(R.id.teamA).setOnClickListener { addPoint(0) }
-        findViewById<View>(R.id.teamB).setOnClickListener { addPoint(1) }
+        findViewById<View>(R.id.teamA).setOnClickListener { addPoint(0, "toque") }
+        findViewById<View>(R.id.teamB).setOnClickListener { addPoint(1, "toque") }
         findViewById<Button>(R.id.undo).setOnClickListener { undoLast() }
         findViewById<Button>(R.id.reset).setOnClickListener {
-            AlertDialog.Builder(this)
-                .setMessage("¿Empezar un partido nuevo?")
-                .setPositiveButton("Sí") { _, _ -> match.reset(); render(); say("Nuevo partido") }
-                .setNegativeButton("No", null).show()
+            if (current != null && !match.state.finished && match.events.isNotEmpty()) {
+                AlertDialog.Builder(this)
+                    .setMessage("El partido actual se guardará como INACABADO. ¿Empezar otro?")
+                    .setPositiveButton("Sí") { _, _ -> showNewMatchDialog() }
+                    .setNegativeButton("No", null).show()
+            } else showNewMatchDialog()
         }
         findViewById<Button>(R.id.settings).setOnClickListener { showSettings() }
-        findViewById<Button>(R.id.voice).setOnClickListener { voiceOn = !voiceOn; savePrefs(); render() }
+        findViewById<Button>(R.id.history).setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
         findViewById<Button>(R.id.flip).setOnClickListener {
             useFrontCamera = !useFrontCamera; startCamera()
         }
@@ -126,24 +137,125 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
             startCamera()
         else permissionLauncher.launch(Manifest.permission.CAMERA)
+
+        if (firstStart) {
+            val pending = store.inProgress()
+            if (pending != null) askResume(pending) else showNewMatchDialog()
+        }
+    }
+
+    // ---------- Partidos guardados ----------
+
+    private fun askResume(pending: MatchRecord) {
+        val sum = MatchSummary(pending)
+        AlertDialog.Builder(this)
+            .setTitle("Partido sin terminar")
+            .setMessage("${pending.teamName(0)}  contra  ${pending.teamName(1)}\n${sum.result.ifEmpty { "0-0" }}\n\n¿Quieres continuarlo?")
+            .setCancelable(false)
+            .setPositiveButton("Continuar") { _, _ -> loadRecord(pending) }
+            .setNegativeButton("Nuevo partido") { _, _ -> showNewMatchDialog(pending) }
+            .show()
+    }
+
+    private fun loadRecord(r: MatchRecord) {
+        current = r
+        match.goldenPoint = r.golden
+        match.names = arrayOf(r.teamName(0), r.teamName(1))
+        match.replay(r.points)
+        render()
+    }
+
+    /** Un partido que se deja sin acabar se guarda como "inacabado" (si no tenía puntos, se descarta). */
+    private fun closeAsUnfinished(r: MatchRecord) {
+        if (r.status != "en_curso") return
+        if (r.points.isEmpty()) { store.delete(r.id); return }
+        r.status = "inacabado"
+        r.end = r.points.last().time
+        store.save(r)
+    }
+
+    /** Guarda el partido actual tras cada punto o deshacer. */
+    private fun persist() {
+        val r = current ?: return
+        r.points = match.events.toList()
+        r.mode = if (armMode) "brazos" else "mano"
+        if (match.state.finished) {
+            r.status = "terminado"; r.end = r.points.lastOrNull()?.time ?: System.currentTimeMillis()
+        } else {
+            r.status = "en_curso"; r.end = 0
+        }
+        try { store.save(r) } catch (e: Exception) {
+            Toast.makeText(this, "No se pudo guardar: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showNewMatchDialog(pendingToClose: MatchRecord? = null) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val known = store.knownPlayers()
+        val prev = current ?: pendingToClose ?: store.all().lastOrNull()
+        fun label(t: String) = TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 0); textSize = 15f }
+        fun player(hint: String, i: Int) = AutoCompleteTextView(this).apply {
+            this.hint = hint
+            setSingleLine(); threshold = 1
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            setAdapter(ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, known))
+            setText(prev?.players?.getOrNull(i) ?: "")
+        }
+        fun alias(i: Int) = EditText(this).apply {
+            hint = "Alias de la pareja (opcional)"; setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            setText(prev?.aliases?.getOrNull(i) ?: "")
+        }
+        val p = Array(4) { player(if (it % 2 == 0) "Jugador 1" else "Jugador 2", it) }
+        val al = Array(2) { alias(it) }
+        val golden = CheckBox(this).apply { text = "Punto de oro (sin ventajas)"; isChecked = prev?.golden ?: lastGolden }
+
+        box.addView(label(if (armMode) "Equipo A (brazo izquierdo)" else "Equipo A (✊ puño)"))
+        box.addView(p[0]); box.addView(p[1]); box.addView(al[0])
+        box.addView(label(if (armMode) "Equipo B (brazo derecho)" else "Equipo B (✋ palma)"))
+        box.addView(p[2]); box.addView(p[3]); box.addView(al[1])
+        box.addView(golden)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Nuevo partido")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Empezar") { _, _ ->
+                val defaults = arrayOf("Jugador A1", "Jugador A2", "Jugador B1", "Jugador B2")
+                val names = Array(4) { i -> p[i].text.toString().trim().replace(";", ",").ifEmpty { defaults[i] } }
+                val aliases = Array(2) { i -> al[i].text.toString().trim().replace(";", ",") }
+                (current ?: pendingToClose)?.let { closeAsUnfinished(it) }
+                lastGolden = golden.isChecked; savePrefs()
+                val rec = MatchRecord(
+                    id = store.nextId(), players = names, aliases = aliases, golden = golden.isChecked,
+                    start = System.currentTimeMillis(), end = 0, status = "en_curso",
+                    mode = if (armMode) "brazos" else "mano", points = emptyList()
+                )
+                current = rec
+                match.reset()
+                match.goldenPoint = rec.golden
+                match.names = arrayOf(rec.teamName(0), rec.teamName(1))
+                persist()
+                render()
+                say("Nuevo partido. ${rec.teamName(0)} contra ${rec.teamName(1)}")
+            }
+        // La primera vez es obligatorio crear partido; después se puede cancelar y seguir con el actual.
+        if (current != null) dialog.setNegativeButton("Cancelar", null) else dialog.setCancelable(false)
+        dialog.show()
     }
 
     // ---------- Ajustes ----------
 
     private fun loadPrefs() {
         val p = getSharedPreferences("padel", Context.MODE_PRIVATE)
-        match.names[0] = p.getString("nameA", "Equipo A")!!
-        match.names[1] = p.getString("nameB", "Equipo B")!!
-        match.goldenPoint = p.getBoolean("golden", false)
+        lastGolden = p.getBoolean("golden", false)
         armMode = p.getBoolean("armMode", false)
         voiceOn = p.getBoolean("voice", true)
     }
 
     private fun savePrefs() {
         getSharedPreferences("padel", Context.MODE_PRIVATE).edit()
-            .putString("nameA", match.names[0])
-            .putString("nameB", match.names[1])
-            .putBoolean("golden", match.goldenPoint)
+            .putBoolean("golden", lastGolden)
             .putBoolean("armMode", armMode)
             .putBoolean("voice", voiceOn)
             .apply()
@@ -152,29 +264,20 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun showSettings() {
         val pad = (16 * resources.displayMetrics.density).toInt()
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
-        fun label(t: String) = TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 0) }
-        fun field(v: String) = EditText(this).apply {
-            setText(v); setSingleLine(); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
-        }
-        val nameA = field(match.names[0])
-        val nameB = field(match.names[1])
-        val rbHand = RadioButton(this).apply { id = View.generateViewId(); text = "✊ Puño = A   ·   ✋ Palma = B" }
-        val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazo izquierdo arriba = A   ·   Brazo derecho arriba = B" }
+        val rbHand = RadioButton(this).apply { id = View.generateViewId(); text = "✊ Puño = A · ✋ Palma = B · 👎 = deshacer" }
+        val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazo izquierdo = A · Brazo derecho = B · ❌ brazos cruzados = deshacer" }
         val group = RadioGroup(this).apply { addView(rbHand); addView(rbArm); check(if (armMode) rbArm.id else rbHand.id) }
-        val golden = CheckBox(this).apply { text = "Punto de oro (sin ventajas)"; isChecked = match.goldenPoint }
+        val voice = CheckBox(this).apply { text = "Anunciar el marcador por voz"; isChecked = voiceOn }
 
-        box.addView(label("Nombre del equipo A")); box.addView(nameA)
-        box.addView(label("Nombre del equipo B")); box.addView(nameB)
-        box.addView(label("Cómo se marca el punto")); box.addView(group)
-        box.addView(golden)
+        box.addView(TextView(this).apply { text = "Cómo se marca el punto" })
+        box.addView(group)
+        box.addView(voice)
 
         AlertDialog.Builder(this)
             .setTitle("Ajustes")
             .setView(box)
             .setPositiveButton("Guardar") { _, _ ->
-                match.names[0] = nameA.text.toString().trim().ifEmpty { "Equipo A" }
-                match.names[1] = nameB.text.toString().trim().ifEmpty { "Equipo B" }
-                match.goldenPoint = golden.isChecked
+                voiceOn = voice.isChecked
                 val newArm = group.checkedRadioButtonId == rbArm.id
                 if (newArm != armMode) {
                     armMode = newArm
@@ -341,7 +444,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val held = now - candidateSince
         progress.progress = ((held * 100) / HOLD_MS).toInt().coerceAtMost(100)
         if (held >= HOLD_MS) {
-            if (candidate == UNDO) undoLast() else addPoint(candidate)
+            if (candidate == UNDO) undoLast() else addPoint(candidate, "gesto")
             cooldownUntil = now + COOLDOWN_MS
             needRelease = true
             candidate = -1
@@ -351,8 +454,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     // ---------- Marcador ----------
 
-    private fun addPoint(team: Int) {
-        val msg = match.point(team)
+    private fun addPoint(team: Int, source: String) {
+        if (match.state.finished) { say("El partido ha terminado. Pulsa Nuevo para empezar otro"); return }
+        val msg = match.point(team, source)
+        persist()
         render()
         tone.startTone(if (team == 0) ToneGenerator.TONE_PROP_BEEP else ToneGenerator.TONE_PROP_ACK, 200)
         vibrate()
@@ -362,6 +467,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun undoLast() {
         if (match.undo()) {
+            persist()
             render()
             tone.startTone(ToneGenerator.TONE_PROP_NACK, 300)
             vibrate()
@@ -392,7 +498,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             match.goldenPoint -> "PUNTO DE ORO · JUEGOS · PUNTOS"
             else -> "JUEGOS · PUNTOS"
         }
-        findViewById<Button>(R.id.voice).text = "Voz: ${if (voiceOn) "SÍ" else "NO"}"
         if (gestureRec != null || poseRec != null) status.text = hintText()
     }
 
