@@ -71,6 +71,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         const val ONE_BUTTON_MS = 600L   // mando cuyos botones envían lo mismo: tiempo entre pulsaciones
         const val DOUBLE_MS = 500L       // doble pulsación para anular
         var undoByRemote = false         // false = se anula con gesto · true = doble pulsación del mando
+        var oneButtonMode = false        // mando de un botón: 1 pulsación = A · 2 = B · 3 = anular
         lateinit var store: MatchStore
         var current: MatchRecord? = null
 
@@ -294,6 +295,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         sigA = p.getString("sigA", null) ?: "${KeyEvent.KEYCODE_VOLUME_UP}"
         sigB = p.getString("sigB", null) ?: "${KeyEvent.KEYCODE_ENTER}"
         undoByRemote = p.getBoolean("undoRemote", false)
+        oneButtonMode = p.getBoolean("oneButton", false)
     }
 
     private fun savePrefs() {
@@ -305,6 +307,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             .putString("sigA", sigA)
             .putString("sigB", sigB)
             .putBoolean("undoRemote", undoByRemote)
+            .putBoolean("oneButton", oneButtonMode)
             .apply()
     }
 
@@ -315,9 +318,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazo izquierdo = A · Brazo derecho = B · ❌ brazos cruzados = deshacer" }
         val group = RadioGroup(this).apply { addView(rbHand); addView(rbArm); check(if (armMode) rbArm.id else rbHand.id) }
         val voice = CheckBox(this).apply { text = "Anunciar el marcador por voz"; isChecked = voiceOn }
-        val remote = CheckBox(this).apply { text = "Usar mando Bluetooth (botón grande = A · pequeño = B)"; isChecked = remoteOn }
+        val remote = CheckBox(this).apply { text = "Usar mando Bluetooth"; isChecked = remoteOn }
+        val rbTwo = RadioButton(this).apply { id = View.generateViewId(); text = "Un botón por equipo (grande = A · pequeño = B)" }
+        val rbOne = RadioButton(this).apply { id = View.generateViewId(); text = "Pulsaciones: 1 = A · 2 = B · 3 = anular" }
+        val modeGroup = RadioGroup(this).apply { addView(rbTwo); addView(rbOne); check(if (oneButtonMode) rbOne.id else rbTwo.id) }
         val rbUndoGesture = RadioButton(this).apply { id = View.generateViewId(); text = "Gesto (❌ brazos cruzados / 👎 pulgar abajo)" }
-        val rbUndoRemote = RadioButton(this).apply { id = View.generateViewId(); text = "Doble pulsación rápida del mando (cualquier botón)" }
+        val rbUndoRemote = RadioButton(this).apply { id = View.generateViewId(); text = "El mando (2 pulsaciones rápidas; en modo pulsaciones, 3)" }
         val undoGroup = RadioGroup(this).apply {
             addView(rbUndoGesture); addView(rbUndoRemote)
             check(if (undoByRemote) rbUndoRemote.id else rbUndoGesture.id)
@@ -332,7 +338,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         box.addView(group)
         box.addView(voice)
         box.addView(remote)
-        box.addView(TextView(this).apply { text = "Anular el último punto con"; setPadding(0, pad / 2, 0, 0) })
+        box.addView(TextView(this).apply { text = "Cómo funciona el mando"; setPadding(0, pad / 2, 0, 0) })
+        box.addView(modeGroup)
+        box.addView(TextView(this).apply { text = "Anular el último punto con (además del botón ↶)"; setPadding(0, pad / 2, 0, 0) })
         box.addView(undoGroup)
         box.addView(learn)
 
@@ -343,6 +351,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 voiceOn = voice.isChecked
                 remoteOn = remote.isChecked
                 undoByRemote = undoGroup.checkedRadioButtonId == rbUndoRemote.id
+                oneButtonMode = modeGroup.checkedRadioButtonId == rbOne.id
                 pendingClicks = 0
                 val newArm = group.checkedRadioButtonId == rbArm.id
                 if (newArm != armMode) {
@@ -365,6 +374,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun codesOf(sig: String) = sig.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
     private fun sigOf(codes: Collection<Int>) = codes.toSortedSet().joinToString(",")
     private fun sameButtons() = sigA == sigB
+    /** Modo pulsaciones: elegido en Ajustes o forzado porque los dos botones envían lo mismo. */
+    private fun oneButton() = oneButtonMode || sameButtons()
     private fun keyName(c: Int) = when (c) {
         KeyEvent.KEYCODE_VOLUME_UP -> "Volumen +"
         KeyEvent.KEYCODE_VOLUME_DOWN -> "Volumen −"
@@ -382,7 +393,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     /** Decide qué botón se ha pulsado: 0 = A, 1 = B. */
     private fun classify(sig: String, codes: Set<Int>): Int {
-        if (sameButtons()) return 0
+        if (oneButton()) return 0
         if (sig == sigA) return 0
         if (sig == sigB) return 1
         val onlyA = codesOf(sigA) - codesOf(sigB)
@@ -412,25 +423,25 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val flushClicks = Runnable {
         val n = pendingClicks; pendingClicks = 0
         if (n == 0) return@Runnable
-        if (!sameButtons()) {
-            // Dos botones distintos: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
+        if (!oneButton()) {
+            // Un botón por equipo: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
             if (n == 1) addPoint(firstButton, "mando") else undoLast()
         } else {
-            // Botones indistinguibles: 1 = A · 2 = B · 3 = anular (si se anula con el mando)
-            when {
-                n == 1 -> addPoint(0, "mando")
-                n == 2 || !undoByRemote -> addPoint(1, "mando")
+            // Modo pulsaciones (cualquier botón): 1 = A · 2 = B · 3 o más = anular
+            when (n) {
+                1 -> addPoint(0, "mando")
+                2 -> addPoint(1, "mando")
                 else -> undoLast()
             }
         }
     }
 
     private fun onButton(button: Int) {
-        if (!sameButtons() && !undoByRemote) { addPoint(button, "mando"); return }   // sin espera
+        if (!oneButton() && !undoByRemote) { addPoint(button, "mando"); return }   // sin espera
         if (pendingClicks == 0) firstButton = button
         pendingClicks++
         handler.removeCallbacks(flushClicks)
-        handler.postDelayed(flushClicks, if (sameButtons()) ONE_BUTTON_MS else DOUBLE_MS)
+        handler.postDelayed(flushClicks, if (oneButton()) ONE_BUTTON_MS else DOUBLE_MS)
     }
 
     /** Asistente: detecta qué teclas envía cada botón del mando. */
@@ -447,17 +458,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 dlg.setMessage("✔ Botón del equipo A: ${sigName(sigs[0])}\n\nAhora pulsa el botón para el EQUIPO B (${match.names[1]}).")
             } else {
                 sigA = sigs[0]; sigB = sigs[1]; remoteOn = true
+                if (sameButtons()) oneButtonMode = true
                 pendingClicks = 0
                 savePrefs()
                 dlg.dismiss()
                 val detail = "Equipo A: ${sigName(sigA)}\nEquipo B: ${sigName(sigB)}\n\n"
                 val undoTxt = if (undoByRemote) "\nDoble pulsación rápida = anular." else ""
-                val undoTxt1 = if (undoByRemote) " · 3 pulsaciones = anular" else ""
                 val msg = if (!sameButtons()) {
                     detail + "✔ Mando listo: un botón para cada equipo." + undoTxt
                 } else {
                     detail + "Los dos botones envían exactamente lo mismo, así que la app no puede distinguirlos.\n" +
-                        "1 pulsación = ${match.names[0]} · 2 pulsaciones = ${match.names[1]}" + undoTxt1
+                        "Se usará el modo pulsaciones (con cualquier botón):\n1 pulsación = ${match.names[0]}\n2 pulsaciones = ${match.names[1]}\n3 pulsaciones = anular"
                 }
                 AlertDialog.Builder(this).setTitle("🎮 Mando configurado").setMessage(msg).setPositiveButton("OK", null).show()
                 say("Mando configurado")
@@ -524,11 +535,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val gestures = if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}"
             else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}"
         val undo = when {
+            remoteOn && oneButton() -> "🎮 1 = ${match.names[0]} · 2 = ${match.names[1]} · 3 = anular"
             remoteUndo -> "anular = doble pulsación del mando"
             armMode -> "❌ brazos cruzados = anular"
             else -> "👎 = anular"
         }
-        return "$gestures  ·  $undo" + if (remoteOn) "  ·  🎮 mando activo" else ""
+        val extra = if (remoteOn && !oneButton()) "  ·  🎮 mando activo" else ""
+        return "$gestures  ·  $undo$extra"
     }
 
     /** 0 = A, 1 = B, 2 = deshacer, -1 = nada o gestos contradictorios. */

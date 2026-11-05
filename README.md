@@ -9,6 +9,7 @@ Marcador de pádel para Android que suma puntos por gestos ante la cámara y gua
 | Brazos | brazo izquierdo arriba | brazo derecho arriba | ❌ brazos cruzados en X por encima de los hombros |
 
 **Mando Bluetooth** (opcional): botón grande = punto para A, botón pequeño = punto para B. Para anular, se elige en Ajustes: con el gesto de deshacer o con **doble pulsación rápida** del mando (en ese caso el gesto de anular se desactiva).
+Modo **pulsaciones** (para mandos cuyos botones envían lo mismo, o si se prefiere): 1 pulsación = A · 2 = B · 3 = anular.
 Se configura en ⚙ Ajustes → "Configurar mando" (detecta qué envía cada botón; si los dos envían lo mismo: 1 pulsación = A, 2 = B).
 
 El gesto se mantiene ~1 s. Tras cada gesto hay 2,5 s de pausa y hay que bajar la mano/brazo antes del siguiente.
