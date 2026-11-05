@@ -2,18 +2,16 @@
 
 Marcador de pádel para Android que suma puntos por gestos ante la cámara y guarda todos los partidos para hacer estadísticas.
 
-## Gestos (se elige en ⚙ Ajustes)
-| Modo | Equipo A | Equipo B | Deshacer último punto |
-|---|---|---|---|
-| Mano | ✊ puño | ✋ palma | 👎 pulgar abajo |
-| Brazos | brazo izquierdo arriba | brazo derecho arriba | ❌ brazos cruzados en X por encima de los hombros |
+## Cómo se marca (⚙ Ajustes)
+**Gestos para sumar puntos** (a elegir): ninguno · mano (✊ puño = A, ✋ palma = B) · brazos (izquierdo arriba = A, derecho arriba = B).
+El gesto se mantiene ~1 s; después hay 2,5 s de pausa y hay que bajar la mano/brazo antes del siguiente.
 
-**Mando Bluetooth** (opcional): botón grande = punto para A, botón pequeño = punto para B. Para anular, se elige en Ajustes: con el gesto de deshacer o con **doble pulsación rápida** del mando (en ese caso el gesto de anular se desactiva).
-Modo **pulsaciones** (para mandos cuyos botones envían lo mismo, o si se prefiere): 1 pulsación = A · 2 = B · 3 = anular.
-Se configura en ⚙ Ajustes → "Configurar mando" (detecta qué envía cada botón; si los dos envían lo mismo: 1 pulsación = A, 2 = B).
+**Anular con gesto** (opcional): **brazos en cruz**, los dos extendidos a los lados a la altura de los hombros (en T), ~1 s.
 
-El gesto se mantiene ~1 s. Tras cada gesto hay 2,5 s de pausa y hay que bajar la mano/brazo antes del siguiente.
-También se puede sumar tocando la franja de cada equipo, y deshacer con el botón ↶.
+**Mando Bluetooth** (cualquier botón): **1 pulsación = A · 2 = B · 3 = anular**. La app espera 0,7 s tras la última pulsación
+para decidir y muestra las pulsaciones contadas debajo de la cámara. Se empareja en Ajustes de Android → Bluetooth.
+
+También se puede sumar tocando la franja de cada equipo, y el botón ↶ de la pantalla siempre anula.
 
 ## Partidos
 - **Nuevo**: se introducen los 2 jugadores de cada pareja (con autocompletado), alias opcional y punto de oro.

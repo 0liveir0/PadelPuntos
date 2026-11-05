@@ -59,35 +59,45 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val match = PadelMatch()
         var useFrontCamera = false
         var voiceOn = true
-        var armMode = false            // false = puño/palma, true = brazo izquierdo/derecho
         var prefsLoaded = false
         var lastGolden = false
-        // Mando Bluetooth (se comporta como un teclado). Cada botón se identifica por el CONJUNTO
-        // de teclas que envía en una pulsación (p. ej. grande = "24", pequeño = "24,66").
-        var remoteOn = true
-        var sigA = "${KeyEvent.KEYCODE_VOLUME_UP}"
-        var sigB = "${KeyEvent.KEYCODE_ENTER}"
-        const val BURST_MS = 160L        // teclas recibidas en <160 ms = una sola pulsación física
-        const val ONE_BUTTON_MS = 600L   // mando cuyos botones envían lo mismo: tiempo entre pulsaciones
-        const val DOUBLE_MS = 500L       // doble pulsación para anular
-        var undoByRemote = false         // false = se anula con gesto · true = doble pulsación del mando
-        var oneButtonMode = false        // mando de un botón: 1 pulsación = A · 2 = B · 3 = anular
         lateinit var store: MatchStore
         var current: MatchRecord? = null
 
+        // Cómo se marca: gestos para puntos (0 = ninguno, 1 = mano ✊/✋, 2 = brazo izq./dcho.),
+        // gesto de brazos en cruz para anular, y mando Bluetooth (1 = A · 2 = B · 3 = anular)
+        const val G_NONE = 0
+        const val G_HAND = 1
+        const val G_ARMS = 2
+        var pointGestures = G_HAND
+        var undoGesture = true
+        var remoteOn = true
+
+        // Mando Bluetooth: se comporta como un teclado; vale cualquiera de estas teclas
+        val REMOTE_KEYS = setOf(
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_SPACE,
+            KeyEvent.KEYCODE_CAMERA, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK,
+            KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS
+        )
+        const val PRESS_WINDOW_MS = 700L // tras la última pulsación se espera esto antes de decidir
+        const val SAME_PRESS_MS = 120L   // tecla DISTINTA en <120 ms = misma pulsación física (mandos que envían 2 teclas)
+
         const val HOLD_MS = 1000L      // tiempo que hay que mantener el gesto
         const val COOLDOWN_MS = 2500L  // pausa tras sumar un punto
+        const val FRESH_MS = 400L      // resultado de un detector válido durante este tiempo
         const val MIN_SCORE = 0.6f     // confianza mínima del gesto de mano
         const val MIN_VIS = 0.5f       // visibilidad mínima de muñeca/hombro
         const val FIST = "Closed_Fist"
         const val PALM = "Open_Palm"
-        const val THUMB_DOWN = "Thumb_Down"
-        const val UNDO = 2             // código interno del gesto "deshacer"
+        const val UNDO = 2             // código interno de "anular"
 
         // Índices de MediaPipe Pose (izquierda/derecha del propio jugador)
         const val NOSE = 0
         const val L_SHOULDER = 11
         const val R_SHOULDER = 12
+        const val L_ELBOW = 13
+        const val R_ELBOW = 14
         const val L_WRIST = 15
         const val R_WRIST = 16
     }
@@ -218,7 +228,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun persist() {
         val r = current ?: return
         r.points = match.events.toList()
-        r.mode = if (armMode) "brazos" else "mano"
+        r.mode = modeName()
         if (match.state.finished) {
             r.status = "terminado"; r.end = r.points.lastOrNull()?.time ?: System.currentTimeMillis()
         } else {
@@ -251,9 +261,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val al = Array(2) { alias(it) }
         val golden = CheckBox(this).apply { text = "Punto de oro (sin ventajas)"; isChecked = prev?.golden ?: lastGolden }
 
-        box.addView(label(if (armMode) "Equipo A (brazo izquierdo)" else "Equipo A (✊ puño)"))
+        box.addView(label("Equipo A (${howA()})"))
         box.addView(p[0]); box.addView(p[1]); box.addView(al[0])
-        box.addView(label(if (armMode) "Equipo B (brazo derecho)" else "Equipo B (✋ palma)"))
+        box.addView(label("Equipo B (${howB()})"))
         box.addView(p[2]); box.addView(p[3]); box.addView(al[1])
         box.addView(golden)
 
@@ -269,7 +279,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val rec = MatchRecord(
                     id = store.nextId(), players = names, aliases = aliases, golden = golden.isChecked,
                     start = System.currentTimeMillis(), end = 0, status = "en_curso",
-                    mode = if (armMode) "brazos" else "mano", points = emptyList()
+                    mode = modeName(), points = emptyList()
                 )
                 current = rec
                 match.reset()
@@ -289,73 +299,78 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun loadPrefs() {
         val p = getSharedPreferences("padel", Context.MODE_PRIVATE)
         lastGolden = p.getBoolean("golden", false)
-        armMode = p.getBoolean("armMode", false)
         voiceOn = p.getBoolean("voice", true)
         remoteOn = p.getBoolean("remoteOn", true)
-        sigA = p.getString("sigA", null) ?: "${KeyEvent.KEYCODE_VOLUME_UP}"
-        sigB = p.getString("sigB", null) ?: "${KeyEvent.KEYCODE_ENTER}"
-        undoByRemote = p.getBoolean("undoRemote", false)
-        oneButtonMode = p.getBoolean("oneButton", false)
+        undoGesture = p.getBoolean("undoGesture", true)
+        // compatibilidad con versiones anteriores ("armMode")
+        pointGestures = p.getInt("pointGestures", if (p.getBoolean("armMode", false)) G_ARMS else G_HAND)
     }
 
     private fun savePrefs() {
         getSharedPreferences("padel", Context.MODE_PRIVATE).edit()
             .putBoolean("golden", lastGolden)
-            .putBoolean("armMode", armMode)
             .putBoolean("voice", voiceOn)
             .putBoolean("remoteOn", remoteOn)
-            .putString("sigA", sigA)
-            .putString("sigB", sigB)
-            .putBoolean("undoRemote", undoByRemote)
-            .putBoolean("oneButton", oneButtonMode)
+            .putBoolean("undoGesture", undoGesture)
+            .putInt("pointGestures", pointGestures)
             .apply()
     }
+
+    private fun modeName() = buildList {
+        if (pointGestures == G_HAND) add("mano")
+        if (pointGestures == G_ARMS) add("brazos")
+        if (remoteOn) add("mando")
+    }.joinToString("+").ifEmpty { "toque" }
+
+    private fun howA() = listOfNotNull(
+        when (pointGestures) { G_HAND -> "✊ puño"; G_ARMS -> "brazo izquierdo"; else -> null },
+        if (remoteOn) "1 pulsación" else null
+    ).joinToString(" · ").ifEmpty { "tocar su franja" }
+
+    private fun howB() = listOfNotNull(
+        when (pointGestures) { G_HAND -> "✋ palma"; G_ARMS -> "brazo derecho"; else -> null },
+        if (remoteOn) "2 pulsaciones" else null
+    ).joinToString(" · ").ifEmpty { "tocar su franja" }
 
     private fun showSettings() {
         val pad = (16 * resources.displayMetrics.density).toInt()
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
-        val rbHand = RadioButton(this).apply { id = View.generateViewId(); text = "✊ Puño = A · ✋ Palma = B · 👎 = deshacer" }
-        val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazo izquierdo = A · Brazo derecho = B · ❌ brazos cruzados = deshacer" }
-        val group = RadioGroup(this).apply { addView(rbHand); addView(rbArm); check(if (armMode) rbArm.id else rbHand.id) }
+        fun title(t: String) = TextView(this).apply { text = t; textSize = 15f; setPadding(0, pad / 2, 0, 0); setTypeface(typeface, android.graphics.Typeface.BOLD) }
+
+        val rbNone = RadioButton(this).apply { id = View.generateViewId(); text = "Ninguno (solo mando o tocar la pantalla)" }
+        val rbHand = RadioButton(this).apply { id = View.generateViewId(); text = "Mano: ✊ puño = A · ✋ palma = B" }
+        val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazos: izquierdo arriba = A · derecho arriba = B" }
+        val group = RadioGroup(this).apply {
+            addView(rbNone); addView(rbHand); addView(rbArm)
+            check(when (pointGestures) { G_HAND -> rbHand.id; G_ARMS -> rbArm.id; else -> rbNone.id })
+        }
+        val undoG = CheckBox(this).apply { text = "Brazos en cruz (los dos extendidos a los lados, en T) = anular"; isChecked = undoGesture }
+        val remote = CheckBox(this).apply { text = "Mando Bluetooth: 1 pulsación = A · 2 = B · 3 = anular"; isChecked = remoteOn }
         val voice = CheckBox(this).apply { text = "Anunciar el marcador por voz"; isChecked = voiceOn }
-        val remote = CheckBox(this).apply { text = "Usar mando Bluetooth"; isChecked = remoteOn }
-        val rbTwo = RadioButton(this).apply { id = View.generateViewId(); text = "Un botón por equipo (grande = A · pequeño = B)" }
-        val rbOne = RadioButton(this).apply { id = View.generateViewId(); text = "Pulsaciones: 1 = A · 2 = B · 3 = anular" }
-        val modeGroup = RadioGroup(this).apply { addView(rbTwo); addView(rbOne); check(if (oneButtonMode) rbOne.id else rbTwo.id) }
-        val rbUndoGesture = RadioButton(this).apply { id = View.generateViewId(); text = "Gesto (❌ brazos cruzados / 👎 pulgar abajo)" }
-        val rbUndoRemote = RadioButton(this).apply { id = View.generateViewId(); text = "El mando (2 pulsaciones rápidas; en modo pulsaciones, 3)" }
-        val undoGroup = RadioGroup(this).apply {
-            addView(rbUndoGesture); addView(rbUndoRemote)
-            check(if (undoByRemote) rbUndoRemote.id else rbUndoGesture.id)
-        }
-        var dlgRef: AlertDialog? = null
-        val learn = Button(this).apply {
-            text = "🎮 Configurar mando…"
-            setOnClickListener { dlgRef?.dismiss(); learnRemote() }
-        }
 
-        box.addView(TextView(this).apply { text = "Cómo se marca el punto con gestos" })
+        box.addView(title("Gestos para sumar puntos"))
         box.addView(group)
-        box.addView(voice)
+        box.addView(title("Anular el último punto"))
+        box.addView(undoG)
+        box.addView(TextView(this).apply { text = "El botón ↶ de la pantalla siempre anula."; textSize = 12f })
+        box.addView(title("Mando"))
         box.addView(remote)
-        box.addView(TextView(this).apply { text = "Cómo funciona el mando"; setPadding(0, pad / 2, 0, 0) })
-        box.addView(modeGroup)
-        box.addView(TextView(this).apply { text = "Anular el último punto con (además del botón ↶)"; setPadding(0, pad / 2, 0, 0) })
-        box.addView(undoGroup)
-        box.addView(learn)
+        box.addView(TextView(this).apply { text = "Empareja antes el mando en Ajustes de Android → Bluetooth. Vale cualquier botón."; textSize = 12f })
+        box.addView(title("Sonido"))
+        box.addView(voice)
 
-        dlgRef = AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Ajustes")
-            .setView(box)
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Guardar") { _, _ ->
-                voiceOn = voice.isChecked
+                val newPoints = when (group.checkedRadioButtonId) { rbHand.id -> G_HAND; rbArm.id -> G_ARMS; else -> G_NONE }
+                val changed = newPoints != pointGestures || undoG.isChecked != undoGesture
+                pointGestures = newPoints
+                undoGesture = undoG.isChecked
                 remoteOn = remote.isChecked
-                undoByRemote = undoGroup.checkedRadioButtonId == rbUndoRemote.id
-                oneButtonMode = modeGroup.checkedRadioButtonId == rbOne.id
-                pendingClicks = 0
-                val newArm = group.checkedRadioButtonId == rbArm.id
-                if (newArm != armMode) {
-                    armMode = newArm
+                voiceOn = voice.isChecked
+                pressCount = 0
+                if (changed) {
                     resetDetectorState()
                     executor.execute { setupDetector() }
                 }
@@ -366,140 +381,56 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             .show()
     }
 
-    // ---------- Mando Bluetooth ----------
+    // ---------- Mando Bluetooth: 1 pulsación = A · 2 = B · 3 = anular ----------
 
     private val handler = Handler(Looper.getMainLooper())
-    private var learning = false
+    private var pressCount = 0
+    private var lastPressCode = 0
+    private var lastPressTime = 0L
 
-    private fun codesOf(sig: String) = sig.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
-    private fun sigOf(codes: Collection<Int>) = codes.toSortedSet().joinToString(",")
-    private fun sameButtons() = sigA == sigB
-    /** Modo pulsaciones: elegido en Ajustes o forzado porque los dos botones envían lo mismo. */
-    private fun oneButton() = oneButtonMode || sameButtons()
-    private fun keyName(c: Int) = when (c) {
-        KeyEvent.KEYCODE_VOLUME_UP -> "Volumen +"
-        KeyEvent.KEYCODE_VOLUME_DOWN -> "Volumen −"
-        KeyEvent.KEYCODE_ENTER -> "Intro"
-        else -> KeyEvent.keyCodeToString(c).removePrefix("KEYCODE_")
-    }
-    private fun sigName(sig: String) = codesOf(sig).joinToString(" + ") { keyName(it) }
-
-    // 1) Agrupa las teclas de una misma pulsación física
-    private val burst = mutableSetOf<Int>()
-    private val endBurst = Runnable {
-        val sig = sigOf(burst); val codes = burst.toSet(); burst.clear()
-        onButton(classify(sig, codes))
-    }
-
-    /** Decide qué botón se ha pulsado: 0 = A, 1 = B. */
-    private fun classify(sig: String, codes: Set<Int>): Int {
-        if (oneButton()) return 0
-        if (sig == sigA) return 0
-        if (sig == sigB) return 1
-        val onlyA = codesOf(sigA) - codesOf(sigB)
-        val onlyB = codesOf(sigB) - codesOf(sigA)
-        return when {
-            codes.any { it in onlyB } -> 1
-            codes.any { it in onlyA } -> 0
-            codesOf(sigB).size > codesOf(sigA).size -> 0   // llegó solo la tecla común: es el botón "corto"
-            else -> 1
+    private val flushPresses = Runnable {
+        val n = pressCount; pressCount = 0
+        when (n) {
+            0 -> {}
+            1 -> addPoint(0, "mando")
+            2 -> addPoint(1, "mando")
+            else -> undoLast()
         }
+        render()
     }
 
     /** Intercepta las teclas del mando antes de que el sistema cambie el volumen o pulse un botón. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
-        if (!remoteOn || learning || (code !in codesOf(sigA) && code !in codesOf(sigB))) return super.dispatchKeyEvent(event)
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-            if (burst.isEmpty()) handler.postDelayed(endBurst, BURST_MS)
-            burst.add(code)
-        }
+        if (!remoteOn || code !in REMOTE_KEYS) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onRemotePress(code, event.eventTime)
         return true
     }
 
-    // 2) Pulsaciones: punto, o anular con doble pulsación
-    private var pendingClicks = 0
-    private var firstButton = 0
-    private val flushClicks = Runnable {
-        val n = pendingClicks; pendingClicks = 0
-        if (n == 0) return@Runnable
-        if (!oneButton()) {
-            // Un botón por equipo: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
-            if (n == 1) addPoint(firstButton, "mando") else undoLast()
-        } else {
-            // Modo pulsaciones (cualquier botón): 1 = A · 2 = B · 3 o más = anular
-            when (n) {
-                1 -> addPoint(0, "mando")
-                2 -> addPoint(1, "mando")
-                else -> undoLast()
-            }
-        }
-    }
-
-    private fun onButton(button: Int) {
-        if (!oneButton() && !undoByRemote) { addPoint(button, "mando"); return }   // sin espera
-        if (pendingClicks == 0) firstButton = button
-        pendingClicks++
-        handler.removeCallbacks(flushClicks)
-        handler.postDelayed(flushClicks, if (oneButton()) ONE_BUTTON_MS else DOUBLE_MS)
-    }
-
-    /** Asistente: detecta qué teclas envía cada botón del mando. */
-    private fun learnRemote() {
-        learning = true
-        val sigs = mutableListOf<String>()
-        val current = mutableSetOf<Int>()
-        lateinit var dlg: AlertDialog
-        val finishPress = Runnable {
-            if (current.isEmpty()) return@Runnable
-            sigs.add(sigOf(current)); current.clear()
-            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
-            if (sigs.size == 1) {
-                dlg.setMessage("✔ Botón del equipo A: ${sigName(sigs[0])}\n\nAhora pulsa el botón para el EQUIPO B (${match.names[1]}).")
-            } else {
-                sigA = sigs[0]; sigB = sigs[1]; remoteOn = true
-                if (sameButtons()) oneButtonMode = true
-                pendingClicks = 0
-                savePrefs()
-                dlg.dismiss()
-                val detail = "Equipo A: ${sigName(sigA)}\nEquipo B: ${sigName(sigB)}\n\n"
-                val undoTxt = if (undoByRemote) "\nDoble pulsación rápida = anular." else ""
-                val msg = if (!sameButtons()) {
-                    detail + "✔ Mando listo: un botón para cada equipo." + undoTxt
-                } else {
-                    detail + "Los dos botones envían exactamente lo mismo, así que la app no puede distinguirlos.\n" +
-                        "Se usará el modo pulsaciones (con cualquier botón):\n1 pulsación = ${match.names[0]}\n2 pulsaciones = ${match.names[1]}\n3 pulsaciones = anular"
-                }
-                AlertDialog.Builder(this).setTitle("🎮 Mando configurado").setMessage(msg).setPositiveButton("OK", null).show()
-                say("Mando configurado")
-                render()
-            }
-        }
-        dlg = AlertDialog.Builder(this)
-            .setTitle("Configurar mando")
-            .setMessage("1. Empareja antes el mando en Ajustes de Android → Bluetooth.\n\n2. Pulsa UNA VEZ el botón que dará el punto al EQUIPO A (${match.names[0]}).")
-            .setNegativeButton("Cancelar", null)
-            .create()
-        dlg.setOnKeyListener { _, code, ev ->
-            if (code == KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
-            if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
-                if (current.isEmpty()) handler.postDelayed(finishPress, 400)   // recoge todas las teclas de la pulsación
-                current.add(code)
-            }
-            true
-        }
-        dlg.setOnDismissListener { learning = false; handler.removeCallbacks(finishPress) }
-        dlg.show()
+    private fun onRemotePress(code: Int, time: Long) {
+        // Algunos mandos envían dos teclas distintas por pulsación (p. ej. Volumen+ e Intro): la segunda no cuenta.
+        // La MISMA tecla repetida siempre cuenta, por rápido que se pulse.
+        if (code != lastPressCode && time - lastPressTime < SAME_PRESS_MS) return
+        lastPressCode = code; lastPressTime = time
+        pressCount++
+        tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 50)
+        val what = when (pressCount) { 1 -> match.names[0]; 2 -> match.names[1]; else -> "ANULAR" }
+        status.text = "🎮 ${"●".repeat(pressCount.coerceAtMost(3))}  →  $what"
+        handler.removeCallbacks(flushPresses)
+        handler.postDelayed(flushPresses, PRESS_WINDOW_MS)
     }
 
     // ---------- Detección (MediaPipe) ----------
+
+    private fun needHand() = pointGestures == G_HAND
+    private fun needPose() = pointGestures == G_ARMS || undoGesture
 
     /** Se ejecuta siempre en el hilo del analizador, así no choca con el análisis de imágenes. */
     private fun setupDetector() {
         gestureRec?.close(); gestureRec = null
         poseRec?.close(); poseRec = null
         try {
-            if (armMode) {
+            if (needPose()) {
                 val opts = PoseLandmarker.PoseLandmarkerOptions.builder()
                     .setBaseOptions(BaseOptions.builder().setModelAssetPath("pose_landmarker_lite.task").build())
                     .setNumPoses(2)
@@ -507,11 +438,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     .setMinPosePresenceConfidence(0.5f)
                     .setMinTrackingConfidence(0.5f)
                     .setRunningMode(RunningMode.LIVE_STREAM)
-                    .setResultListener { r: PoseLandmarkerResult, _ -> val t = armsToTeam(r); runOnUiThread { onDetection(t) } }
+                    .setResultListener { r: PoseLandmarkerResult, _ -> val t = posesToSignal(r); runOnUiThread { onPose(t) } }
                     .setErrorListener { e -> runOnUiThread { status.text = "Error: ${e.message}" } }
                     .build()
                 poseRec = PoseLandmarker.createFromOptions(this, opts)
-            } else {
+            }
+            if (needHand()) {
                 val opts = GestureRecognizer.GestureRecognizerOptions.builder()
                     .setBaseOptions(BaseOptions.builder().setModelAssetPath("gesture_recognizer.task").build())
                     .setNumHands(2)
@@ -519,7 +451,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     .setMinHandPresenceConfidence(0.5f)
                     .setMinTrackingConfidence(0.5f)
                     .setRunningMode(RunningMode.LIVE_STREAM)
-                    .setResultListener { r, _ -> val t = handsToTeam(r); runOnUiThread { onDetection(t) } }
+                    .setResultListener { r, _ -> val t = handsToTeam(r); runOnUiThread { onHand(t) } }
                     .setErrorListener { e -> runOnUiThread { status.text = "Error: ${e.message}" } }
                     .build()
                 gestureRec = GestureRecognizer.createFromOptions(this, opts)
@@ -531,26 +463,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun hintText(): String {
-        val remoteUndo = remoteOn && undoByRemote
-        val gestures = if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}"
-            else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}"
-        val undo = when {
-            remoteOn && oneButton() -> "🎮 1 = ${match.names[0]} · 2 = ${match.names[1]} · 3 = anular"
-            remoteUndo -> "anular = doble pulsación del mando"
-            armMode -> "❌ brazos cruzados = anular"
-            else -> "👎 = anular"
+        val parts = mutableListOf<String>()
+        when (pointGestures) {
+            G_HAND -> parts.add("✊ = ${match.names[0]} · ✋ = ${match.names[1]}")
+            G_ARMS -> parts.add("brazo IZQ ↑ = ${match.names[0]} · DCHO ↑ = ${match.names[1]}")
         }
-        val extra = if (remoteOn && !oneButton()) "  ·  🎮 mando activo" else ""
-        return "$gestures  ·  $undo$extra"
+        if (undoGesture) parts.add("brazos en cruz = anular")
+        if (remoteOn) parts.add("🎮 1 = A · 2 = B · 3 = anular")
+        return parts.joinToString("   |   ").ifEmpty { "Toca la franja de cada equipo para sumar" }
     }
 
-    /** 0 = A, 1 = B, 2 = deshacer, -1 = nada o gestos contradictorios. */
+    /** 0 = A, 1 = B, -1 = nada o gestos contradictorios. */
     private fun handsToTeam(result: GestureRecognizerResult): Int {
         var seen = -1
         for (hand in result.gestures()) {
             val top = hand.firstOrNull() ?: continue
             if (top.score() < MIN_SCORE) continue
-            val t = when (top.categoryName()) { FIST -> 0; PALM -> 1; THUMB_DOWN -> UNDO; else -> -1 }
+            val t = when (top.categoryName()) { FIST -> 0; PALM -> 1; else -> -1 }
             if (t == -1) continue
             if (seen != -1 && seen != t) return -1
             seen = t
@@ -558,20 +487,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         return seen
     }
 
-    /** Brazo levantado = muñeca por encima del hombro y de la cabeza. Izquierda/derecha del propio jugador. */
-    private fun armsToTeam(result: PoseLandmarkerResult): Int {
+    /** 0 = A (brazo izq.), 1 = B (brazo dcho.), UNDO = brazos en cruz, -1 = nada. */
+    private fun posesToSignal(result: PoseLandmarkerResult): Int {
         var seen = -1
         for (pose in result.landmarks()) {
             if (pose.size < 17) continue
-            if (crossedUp(pose)) {
-                if (seen != -1 && seen != UNDO) return -1
-                seen = UNDO; continue
-            }
-            val left = raised(pose, L_WRIST, L_SHOULDER, pose[NOSE])
-            val right = raised(pose, R_WRIST, R_SHOULDER, pose[NOSE])
             val t = when {
-                left && !right -> 0
-                right && !left -> 1
+                undoGesture && armsOut(pose) -> UNDO
+                pointGestures == G_ARMS -> {
+                    val left = raised(pose, L_WRIST, L_SHOULDER, pose[NOSE])
+                    val right = raised(pose, R_WRIST, R_SHOULDER, pose[NOSE])
+                    when { left && !right -> 0; right && !left -> 1; else -> -1 }
+                }
                 else -> -1
             }
             if (t == -1) continue
@@ -592,16 +519,25 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     /**
-     * Brazos cruzados en X por encima de los hombros (gesto japonés de "no").
-     * Cruzado = las muñecas quedan en lado contrario al de sus hombros; funciona con cámara frontal o trasera.
+     * Brazos en cruz (T): los dos brazos extendidos hacia los lados, a la altura de los hombros.
+     * Cada muñeca queda lejos de su hombro, hacia fuera, y a la misma altura que él.
+     * Funciona con cámara frontal o trasera (se compara el lado de cada muñeca con el de su hombro).
      */
-    private fun crossedUp(pose: List<NormalizedLandmark>): Boolean {
-        val lw = pose[L_WRIST]; val rw = pose[R_WRIST]; val ls = pose[L_SHOULDER]; val rs = pose[R_SHOULDER]
-        if (listOf(lw, rw, ls, rs).any { vis(it) < MIN_VIS }) return false
-        val torso = kotlin.math.abs(ls.x() - rs.x()).coerceAtLeast(0.03f)
-        val bothUp = lw.y() < ls.y() - torso * 0.3f && rw.y() < rs.y() - torso * 0.3f
-        val crossed = (lw.x() - rw.x()) * (ls.x() - rs.x()) < 0
-        return bothUp && crossed
+    private fun armsOut(pose: List<NormalizedLandmark>): Boolean {
+        val ls = pose[L_SHOULDER]; val rs = pose[R_SHOULDER]; val lw = pose[L_WRIST]; val rw = pose[R_WRIST]
+        val le = pose[L_ELBOW]; val re = pose[R_ELBOW]
+        if (listOf(ls, rs, lw, rw).any { vis(it) < MIN_VIS }) return false
+        val sw = kotlin.math.abs(ls.x() - rs.x())
+        if (sw < 0.03f) return false                       // de perfil: no se puede valorar
+        val dir = if (ls.x() > rs.x()) 1f else -1f         // hacia dónde queda "fuera" para el lado izquierdo
+        val leftOut = (lw.x() - ls.x()) * dir > sw * 1.1f
+        val rightOut = (rw.x() - rs.x()) * -dir > sw * 1.1f
+        val tol = sw * 0.7f
+        val level = kotlin.math.abs(lw.y() - ls.y()) < tol && kotlin.math.abs(rw.y() - rs.y()) < tol
+        // si se ven los codos, también deben estar a la altura de los hombros (brazos estirados)
+        val elbows = (vis(le) < MIN_VIS || kotlin.math.abs(le.y() - ls.y()) < tol) &&
+            (vis(re) < MIN_VIS || kotlin.math.abs(re.y() - rs.y()) < tol)
+        return leftOut && rightOut && level && elbows
     }
 
     private fun startCamera() {
@@ -626,7 +562,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun analyze(image: ImageProxy) {
-        if (gestureRec == null && poseRec == null) { image.close(); return }
+        if (gestureRec == null && poseRec == null) { image.close(); return }   // sin gestos: solo vista previa
         val bmp: Bitmap = image.toBitmap()
         val matrix = Matrix().apply { postRotate(image.imageInfo.rotationDegrees.toFloat()) }
         image.close()
@@ -643,10 +579,29 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         candidate = -1; needRelease = false; progress.progress = 0
     }
 
-    /** Exige mantener el gesto HOLD_MS, pausa COOLDOWN_MS y bajar la mano/brazo antes del siguiente punto. */
-    private fun onDetection(raw: Int) {
-        // Si se anula con el mando, el gesto de anular se ignora (evita anulaciones accidentales)
-        val seen = if (raw == UNDO && remoteOn && undoByRemote) -1 else raw
+    // Último resultado de cada detector (pueden funcionar los dos a la vez)
+    private var lastHand = -1; private var lastHandT = 0L
+    private var lastPose = -1; private var lastPoseT = 0L
+
+    private fun onHand(t: Int) { lastHand = t; lastHandT = SystemClock.uptimeMillis(); evaluate() }
+    private fun onPose(t: Int) { lastPose = t; lastPoseT = SystemClock.uptimeMillis(); evaluate() }
+
+    /** Combina mano y postura: anular tiene prioridad; si piden equipos distintos, no cuenta nada. */
+    private fun evaluate() {
+        val now = SystemClock.uptimeMillis()
+        val h = if (gestureRec != null && now - lastHandT < FRESH_MS) lastHand else -1
+        val p = if (poseRec != null && now - lastPoseT < FRESH_MS) lastPose else -1
+        val signal = when {
+            p == UNDO -> UNDO
+            h != -1 && p != -1 && h != p -> -1
+            h != -1 -> h
+            else -> p
+        }
+        onDetection(signal)
+    }
+
+    /** Exige mantener el gesto HOLD_MS, pausa COOLDOWN_MS y bajar la mano/brazo antes del siguiente. */
+    private fun onDetection(seen: Int) {
         val now = SystemClock.uptimeMillis()
         if (seen == -1) needRelease = false
         if (now < cooldownUntil || needRelease || seen == -1) {
@@ -694,8 +649,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun render() {
         val s = match.state
-        val iconA = if (armMode) "IZQ ↑" else "✊"
-        val iconB = if (armMode) "DCHO ↑" else "✋"
+        val iconA = when (pointGestures) { G_HAND -> "✊"; G_ARMS -> "IZQ ↑"; else -> if (remoteOn) "🎮 1" else "" }
+        val iconB = when (pointGestures) { G_HAND -> "✋"; G_ARMS -> "DCHO ↑"; else -> if (remoteOn) "🎮 2" else "" }
         findViewById<TextView>(R.id.nameA).text = "$iconA  ${match.names[0]}"
         findViewById<TextView>(R.id.nameB).text = "$iconB  ${match.names[1]}"
         findViewById<TextView>(R.id.pointsA).text = match.pointLabel(0)
@@ -713,7 +668,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             match.goldenPoint -> "PUNTO DE ORO · JUEGOS · PUNTOS"
             else -> "JUEGOS · PUNTOS"
         }
-        if (gestureRec != null || poseRec != null) status.text = hintText()
+        if (pressCount == 0) status.text = hintText()
     }
 
     private fun vibrate() {
