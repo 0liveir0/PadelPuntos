@@ -10,8 +10,8 @@ android {
         applicationId = "com.padelpuntos.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "5.0"
+        versionCode = 7
+        versionName = "7.0"
     }
     buildTypes {
         release { isMinifyEnabled = false }

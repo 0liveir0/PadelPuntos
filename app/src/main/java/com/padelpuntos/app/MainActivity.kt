@@ -11,6 +11,9 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.KeyEvent
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -59,6 +62,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var armMode = false            // false = puño/palma, true = brazo izquierdo/derecho
         var prefsLoaded = false
         var lastGolden = false
+        // Mando Bluetooth (se comporta como un teclado). Por defecto: volumen+ = A, Intro = B
+        var remoteOn = true
+        var keyA = KeyEvent.KEYCODE_VOLUME_UP
+        var keyB = KeyEvent.KEYCODE_ENTER
+        const val SAME_PRESS_MS = 150L   // dos teclas distintas en <150 ms = una sola pulsación física
+        const val ONE_BUTTON_MS = 600L   // mando cuyos botones envían lo mismo: tiempo entre pulsaciones
+        const val DOUBLE_MS = 500L       // doble pulsación para anular
+        var undoByRemote = false         // false = se anula con gesto · true = doble pulsación del mando
         lateinit var store: MatchStore
         var current: MatchRecord? = null
 
@@ -278,6 +289,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         lastGolden = p.getBoolean("golden", false)
         armMode = p.getBoolean("armMode", false)
         voiceOn = p.getBoolean("voice", true)
+        remoteOn = p.getBoolean("remoteOn", true)
+        keyA = p.getInt("keyA", KeyEvent.KEYCODE_VOLUME_UP)
+        keyB = p.getInt("keyB", KeyEvent.KEYCODE_ENTER)
+        undoByRemote = p.getBoolean("undoRemote", false)
     }
 
     private fun savePrefs() {
@@ -285,6 +300,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             .putBoolean("golden", lastGolden)
             .putBoolean("armMode", armMode)
             .putBoolean("voice", voiceOn)
+            .putBoolean("remoteOn", remoteOn)
+            .putInt("keyA", keyA)
+            .putInt("keyB", keyB)
+            .putBoolean("undoRemote", undoByRemote)
             .apply()
     }
 
@@ -295,16 +314,35 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val rbArm = RadioButton(this).apply { id = View.generateViewId(); text = "Brazo izquierdo = A · Brazo derecho = B · ❌ brazos cruzados = deshacer" }
         val group = RadioGroup(this).apply { addView(rbHand); addView(rbArm); check(if (armMode) rbArm.id else rbHand.id) }
         val voice = CheckBox(this).apply { text = "Anunciar el marcador por voz"; isChecked = voiceOn }
+        val remote = CheckBox(this).apply { text = "Usar mando Bluetooth (botón grande = A · pequeño = B)"; isChecked = remoteOn }
+        val rbUndoGesture = RadioButton(this).apply { id = View.generateViewId(); text = "Gesto (❌ brazos cruzados / 👎 pulgar abajo)" }
+        val rbUndoRemote = RadioButton(this).apply { id = View.generateViewId(); text = "Doble pulsación rápida del mando (cualquier botón)" }
+        val undoGroup = RadioGroup(this).apply {
+            addView(rbUndoGesture); addView(rbUndoRemote)
+            check(if (undoByRemote) rbUndoRemote.id else rbUndoGesture.id)
+        }
+        var dlgRef: AlertDialog? = null
+        val learn = Button(this).apply {
+            text = "🎮 Configurar mando…"
+            setOnClickListener { dlgRef?.dismiss(); learnRemote() }
+        }
 
-        box.addView(TextView(this).apply { text = "Cómo se marca el punto" })
+        box.addView(TextView(this).apply { text = "Cómo se marca el punto con gestos" })
         box.addView(group)
         box.addView(voice)
+        box.addView(remote)
+        box.addView(TextView(this).apply { text = "Anular el último punto con"; setPadding(0, pad / 2, 0, 0) })
+        box.addView(undoGroup)
+        box.addView(learn)
 
-        AlertDialog.Builder(this)
+        dlgRef = AlertDialog.Builder(this)
             .setTitle("Ajustes")
             .setView(box)
             .setPositiveButton("Guardar") { _, _ ->
                 voiceOn = voice.isChecked
+                remoteOn = remote.isChecked
+                undoByRemote = undoGroup.checkedRadioButtonId == rbUndoRemote.id
+                pendingClicks = 0
                 val newArm = group.checkedRadioButtonId == rbArm.id
                 if (newArm != armMode) {
                     armMode = newArm
@@ -316,6 +354,91 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             .setNegativeButton("Cancelar", null)
             .show()
+    }
+
+    // ---------- Mando Bluetooth ----------
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var learning = false
+    private var lastKeyCode = 0
+    private var lastKeyTime = 0L
+    private var pendingClicks = 0
+    private var firstKey = 0
+    /** Se ejecuta cuando acaba la ventana de pulsaciones: decide punto A, punto B o anular. */
+    private val flushClicks = Runnable {
+        val n = pendingClicks; pendingClicks = 0
+        if (n == 0) return@Runnable
+        if (keyA != keyB) {
+            // Mando de dos botones: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
+            if (n == 1) addPoint(if (firstKey == keyA) 0 else 1, "mando") else undoLast()
+        } else {
+            // Botones que envían lo mismo: 1 = A · 2 = B · 3 = anular (si se anula con el mando)
+            when {
+                n == 1 -> addPoint(0, "mando")
+                n == 2 || !undoByRemote -> addPoint(1, "mando")
+                else -> undoLast()
+            }
+        }
+    }
+
+    /** Intercepta las teclas del mando antes de que el sistema cambie el volumen o pulse un botón. */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (!remoteOn || learning || (code != keyA && code != keyB)) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onRemoteKey(code)
+        return true
+    }
+
+    private fun onRemoteKey(code: Int) {
+        val now = SystemClock.uptimeMillis()
+        // Algunos mandos envían dos teclas a la vez con una sola pulsación: se cuenta como una.
+        if (code != lastKeyCode && now - lastKeyTime < SAME_PRESS_MS) return
+        lastKeyCode = code; lastKeyTime = now
+        if (keyA != keyB && !undoByRemote) {
+            // Sin anular por mando no hace falta esperar: el punto cuenta al instante
+            addPoint(if (code == keyA) 0 else 1, "mando")
+            return
+        }
+        if (pendingClicks == 0) firstKey = code
+        pendingClicks++
+        handler.removeCallbacks(flushClicks)
+        handler.postDelayed(flushClicks, if (keyA == keyB) ONE_BUTTON_MS else DOUBLE_MS)
+    }
+
+    /** Asistente: detecta qué tecla envía cada botón del mando. */
+    private fun learnRemote() {
+        learning = true
+        val codes = mutableListOf<Int>()
+        var lastT = 0L
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Configurar mando")
+            .setMessage("1. Empareja antes el mando en Ajustes de Android → Bluetooth.\n\n2. Pulsa el botón que dará el punto al EQUIPO A (${match.names[0]}).")
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dlg.setOnKeyListener { _, code, ev ->
+            if (code == KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
+            if (ev.action != KeyEvent.ACTION_DOWN || ev.repeatCount > 0) return@setOnKeyListener true
+            val now = SystemClock.uptimeMillis()
+            if (now - lastT < 400) return@setOnKeyListener true   // segunda tecla de la misma pulsación
+            lastT = now
+            codes.add(code)
+            if (codes.size == 1) {
+                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                dlg.setMessage("✔ Botón del equipo A detectado.\n\nAhora pulsa el botón para el EQUIPO B (${match.names[1]}).")
+            } else {
+                keyA = codes[0]; keyB = codes[1]; remoteOn = true
+                savePrefs()
+                dlg.dismiss()
+                val msg = if (keyA != keyB) "Mando listo: un botón para cada equipo"
+                else "Tus dos botones envían lo mismo: 1 pulsación = ${match.names[0]}, 2 pulsaciones seguidas = ${match.names[1]}" +
+                    if (undoByRemote) ", 3 pulsaciones = anular" else ""
+                AlertDialog.Builder(this).setTitle("🎮 Mando configurado").setMessage(msg).setPositiveButton("OK", null).show()
+                say("Mando configurado")
+            }
+            true
+        }
+        dlg.setOnDismissListener { learning = false }
+        dlg.show()
     }
 
     // ---------- Detección (MediaPipe) ----------
@@ -356,9 +479,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun hintText() =
-        if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}  ·  ❌ brazos cruzados = deshacer"
-        else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}  ·  👎 = deshacer"
+    private fun hintText(): String {
+        val remoteUndo = remoteOn && undoByRemote
+        val gestures = if (armMode) "Brazo IZQ. arriba = ${match.names[0]}  ·  Brazo DCHO. arriba = ${match.names[1]}"
+            else "✊ puño = ${match.names[0]}  ·  ✋ palma = ${match.names[1]}"
+        val undo = when {
+            remoteUndo -> "anular = doble pulsación del mando"
+            armMode -> "❌ brazos cruzados = anular"
+            else -> "👎 = anular"
+        }
+        return "$gestures  ·  $undo" + if (remoteOn) "  ·  🎮 mando activo" else ""
+    }
 
     /** 0 = A, 1 = B, 2 = deshacer, -1 = nada o gestos contradictorios. */
     private fun handsToTeam(result: GestureRecognizerResult): Int {
@@ -460,7 +591,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     /** Exige mantener el gesto HOLD_MS, pausa COOLDOWN_MS y bajar la mano/brazo antes del siguiente punto. */
-    private fun onDetection(seen: Int) {
+    private fun onDetection(raw: Int) {
+        // Si se anula con el mando, el gesto de anular se ignora (evita anulaciones accidentales)
+        val seen = if (raw == UNDO && remoteOn && undoByRemote) -1 else raw
         val now = SystemClock.uptimeMillis()
         if (seen == -1) needRelease = false
         if (now < cooldownUntil || needRelease || seen == -1) {
