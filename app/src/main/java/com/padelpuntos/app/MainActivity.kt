@@ -62,11 +62,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var armMode = false            // false = puño/palma, true = brazo izquierdo/derecho
         var prefsLoaded = false
         var lastGolden = false
-        // Mando Bluetooth (se comporta como un teclado). Por defecto: volumen+ = A, Intro = B
+        // Mando Bluetooth (se comporta como un teclado). Cada botón se identifica por el CONJUNTO
+        // de teclas que envía en una pulsación (p. ej. grande = "24", pequeño = "24,66").
         var remoteOn = true
-        var keyA = KeyEvent.KEYCODE_VOLUME_UP
-        var keyB = KeyEvent.KEYCODE_ENTER
-        const val SAME_PRESS_MS = 150L   // dos teclas distintas en <150 ms = una sola pulsación física
+        var sigA = "${KeyEvent.KEYCODE_VOLUME_UP}"
+        var sigB = "${KeyEvent.KEYCODE_ENTER}"
+        const val BURST_MS = 160L        // teclas recibidas en <160 ms = una sola pulsación física
         const val ONE_BUTTON_MS = 600L   // mando cuyos botones envían lo mismo: tiempo entre pulsaciones
         const val DOUBLE_MS = 500L       // doble pulsación para anular
         var undoByRemote = false         // false = se anula con gesto · true = doble pulsación del mando
@@ -290,8 +291,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         armMode = p.getBoolean("armMode", false)
         voiceOn = p.getBoolean("voice", true)
         remoteOn = p.getBoolean("remoteOn", true)
-        keyA = p.getInt("keyA", KeyEvent.KEYCODE_VOLUME_UP)
-        keyB = p.getInt("keyB", KeyEvent.KEYCODE_ENTER)
+        sigA = p.getString("sigA", null) ?: "${KeyEvent.KEYCODE_VOLUME_UP}"
+        sigB = p.getString("sigB", null) ?: "${KeyEvent.KEYCODE_ENTER}"
         undoByRemote = p.getBoolean("undoRemote", false)
     }
 
@@ -301,8 +302,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             .putBoolean("armMode", armMode)
             .putBoolean("voice", voiceOn)
             .putBoolean("remoteOn", remoteOn)
-            .putInt("keyA", keyA)
-            .putInt("keyB", keyB)
+            .putString("sigA", sigA)
+            .putString("sigB", sigB)
             .putBoolean("undoRemote", undoByRemote)
             .apply()
     }
@@ -360,19 +361,62 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private val handler = Handler(Looper.getMainLooper())
     private var learning = false
-    private var lastKeyCode = 0
-    private var lastKeyTime = 0L
+
+    private fun codesOf(sig: String) = sig.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+    private fun sigOf(codes: Collection<Int>) = codes.toSortedSet().joinToString(",")
+    private fun sameButtons() = sigA == sigB
+    private fun keyName(c: Int) = when (c) {
+        KeyEvent.KEYCODE_VOLUME_UP -> "Volumen +"
+        KeyEvent.KEYCODE_VOLUME_DOWN -> "Volumen −"
+        KeyEvent.KEYCODE_ENTER -> "Intro"
+        else -> KeyEvent.keyCodeToString(c).removePrefix("KEYCODE_")
+    }
+    private fun sigName(sig: String) = codesOf(sig).joinToString(" + ") { keyName(it) }
+
+    // 1) Agrupa las teclas de una misma pulsación física
+    private val burst = mutableSetOf<Int>()
+    private val endBurst = Runnable {
+        val sig = sigOf(burst); val codes = burst.toSet(); burst.clear()
+        onButton(classify(sig, codes))
+    }
+
+    /** Decide qué botón se ha pulsado: 0 = A, 1 = B. */
+    private fun classify(sig: String, codes: Set<Int>): Int {
+        if (sameButtons()) return 0
+        if (sig == sigA) return 0
+        if (sig == sigB) return 1
+        val onlyA = codesOf(sigA) - codesOf(sigB)
+        val onlyB = codesOf(sigB) - codesOf(sigA)
+        return when {
+            codes.any { it in onlyB } -> 1
+            codes.any { it in onlyA } -> 0
+            codesOf(sigB).size > codesOf(sigA).size -> 0   // llegó solo la tecla común: es el botón "corto"
+            else -> 1
+        }
+    }
+
+    /** Intercepta las teclas del mando antes de que el sistema cambie el volumen o pulse un botón. */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (!remoteOn || learning || (code !in codesOf(sigA) && code !in codesOf(sigB))) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            if (burst.isEmpty()) handler.postDelayed(endBurst, BURST_MS)
+            burst.add(code)
+        }
+        return true
+    }
+
+    // 2) Pulsaciones: punto, o anular con doble pulsación
     private var pendingClicks = 0
-    private var firstKey = 0
-    /** Se ejecuta cuando acaba la ventana de pulsaciones: decide punto A, punto B o anular. */
+    private var firstButton = 0
     private val flushClicks = Runnable {
         val n = pendingClicks; pendingClicks = 0
         if (n == 0) return@Runnable
-        if (keyA != keyB) {
-            // Mando de dos botones: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
-            if (n == 1) addPoint(if (firstKey == keyA) 0 else 1, "mando") else undoLast()
+        if (!sameButtons()) {
+            // Dos botones distintos: 1 pulsación = punto de su equipo · 2 pulsaciones = anular
+            if (n == 1) addPoint(firstButton, "mando") else undoLast()
         } else {
-            // Botones que envían lo mismo: 1 = A · 2 = B · 3 = anular (si se anula con el mando)
+            // Botones indistinguibles: 1 = A · 2 = B · 3 = anular (si se anula con el mando)
             when {
                 n == 1 -> addPoint(0, "mando")
                 n == 2 || !undoByRemote -> addPoint(1, "mando")
@@ -381,63 +425,59 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    /** Intercepta las teclas del mando antes de que el sistema cambie el volumen o pulse un botón. */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val code = event.keyCode
-        if (!remoteOn || learning || (code != keyA && code != keyB)) return super.dispatchKeyEvent(event)
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onRemoteKey(code)
-        return true
-    }
-
-    private fun onRemoteKey(code: Int) {
-        val now = SystemClock.uptimeMillis()
-        // Algunos mandos envían dos teclas a la vez con una sola pulsación: se cuenta como una.
-        if (code != lastKeyCode && now - lastKeyTime < SAME_PRESS_MS) return
-        lastKeyCode = code; lastKeyTime = now
-        if (keyA != keyB && !undoByRemote) {
-            // Sin anular por mando no hace falta esperar: el punto cuenta al instante
-            addPoint(if (code == keyA) 0 else 1, "mando")
-            return
-        }
-        if (pendingClicks == 0) firstKey = code
+    private fun onButton(button: Int) {
+        if (!sameButtons() && !undoByRemote) { addPoint(button, "mando"); return }   // sin espera
+        if (pendingClicks == 0) firstButton = button
         pendingClicks++
         handler.removeCallbacks(flushClicks)
-        handler.postDelayed(flushClicks, if (keyA == keyB) ONE_BUTTON_MS else DOUBLE_MS)
+        handler.postDelayed(flushClicks, if (sameButtons()) ONE_BUTTON_MS else DOUBLE_MS)
     }
 
-    /** Asistente: detecta qué tecla envía cada botón del mando. */
+    /** Asistente: detecta qué teclas envía cada botón del mando. */
     private fun learnRemote() {
         learning = true
-        val codes = mutableListOf<Int>()
-        var lastT = 0L
-        val dlg = AlertDialog.Builder(this)
+        val sigs = mutableListOf<String>()
+        val current = mutableSetOf<Int>()
+        lateinit var dlg: AlertDialog
+        val finishPress = Runnable {
+            if (current.isEmpty()) return@Runnable
+            sigs.add(sigOf(current)); current.clear()
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+            if (sigs.size == 1) {
+                dlg.setMessage("✔ Botón del equipo A: ${sigName(sigs[0])}\n\nAhora pulsa el botón para el EQUIPO B (${match.names[1]}).")
+            } else {
+                sigA = sigs[0]; sigB = sigs[1]; remoteOn = true
+                pendingClicks = 0
+                savePrefs()
+                dlg.dismiss()
+                val detail = "Equipo A: ${sigName(sigA)}\nEquipo B: ${sigName(sigB)}\n\n"
+                val undoTxt = if (undoByRemote) "\nDoble pulsación rápida = anular." else ""
+                val undoTxt1 = if (undoByRemote) " · 3 pulsaciones = anular" else ""
+                val msg = if (!sameButtons()) {
+                    detail + "✔ Mando listo: un botón para cada equipo." + undoTxt
+                } else {
+                    detail + "Los dos botones envían exactamente lo mismo, así que la app no puede distinguirlos.\n" +
+                        "1 pulsación = ${match.names[0]} · 2 pulsaciones = ${match.names[1]}" + undoTxt1
+                }
+                AlertDialog.Builder(this).setTitle("🎮 Mando configurado").setMessage(msg).setPositiveButton("OK", null).show()
+                say("Mando configurado")
+                render()
+            }
+        }
+        dlg = AlertDialog.Builder(this)
             .setTitle("Configurar mando")
-            .setMessage("1. Empareja antes el mando en Ajustes de Android → Bluetooth.\n\n2. Pulsa el botón que dará el punto al EQUIPO A (${match.names[0]}).")
+            .setMessage("1. Empareja antes el mando en Ajustes de Android → Bluetooth.\n\n2. Pulsa UNA VEZ el botón que dará el punto al EQUIPO A (${match.names[0]}).")
             .setNegativeButton("Cancelar", null)
             .create()
         dlg.setOnKeyListener { _, code, ev ->
             if (code == KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
-            if (ev.action != KeyEvent.ACTION_DOWN || ev.repeatCount > 0) return@setOnKeyListener true
-            val now = SystemClock.uptimeMillis()
-            if (now - lastT < 400) return@setOnKeyListener true   // segunda tecla de la misma pulsación
-            lastT = now
-            codes.add(code)
-            if (codes.size == 1) {
-                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
-                dlg.setMessage("✔ Botón del equipo A detectado.\n\nAhora pulsa el botón para el EQUIPO B (${match.names[1]}).")
-            } else {
-                keyA = codes[0]; keyB = codes[1]; remoteOn = true
-                savePrefs()
-                dlg.dismiss()
-                val msg = if (keyA != keyB) "Mando listo: un botón para cada equipo"
-                else "Tus dos botones envían lo mismo: 1 pulsación = ${match.names[0]}, 2 pulsaciones seguidas = ${match.names[1]}" +
-                    if (undoByRemote) ", 3 pulsaciones = anular" else ""
-                AlertDialog.Builder(this).setTitle("🎮 Mando configurado").setMessage(msg).setPositiveButton("OK", null).show()
-                say("Mando configurado")
+            if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+                if (current.isEmpty()) handler.postDelayed(finishPress, 400)   // recoge todas las teclas de la pulsación
+                current.add(code)
             }
             true
         }
-        dlg.setOnDismissListener { learning = false }
+        dlg.setOnDismissListener { learning = false; handler.removeCallbacks(finishPress) }
         dlg.show()
     }
 
