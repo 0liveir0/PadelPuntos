@@ -64,6 +64,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         lateinit var store: MatchStore
         var current: MatchRecord? = null
 
+        // Qué hacer al abrir el marcador desde la portada
+        const val EXTRA_ACTION = "accion"
+        const val ACTION_NEW = "nuevo"
+        const val ACTION_CONTINUE = "continuar"
+
         // Cómo se marca: gestos para puntos (0 = ninguno, 1 = mano ✊/✋, 2 = brazo izq./dcho.),
         // gesto de brazos en cruz para anular, y mando Bluetooth (1 = A · 2 = B · 3 = anular)
         const val G_NONE = 0
@@ -162,10 +167,27 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             startCamera()
         else permissionLauncher.launch(Manifest.permission.CAMERA)
 
-        if (firstStart) {
-            val pending = store.inProgress()
-            if (pending != null) askResume(pending) else showNewMatchDialog()
+        if (savedInstanceState == null) {
+            val pending = current?.takeIf { it.status == "en_curso" } ?: store.inProgress()
+            when (intent.getStringExtra(EXTRA_ACTION)) {
+                ACTION_NEW -> showNewMatchDialog(pending)
+                ACTION_CONTINUE -> if (pending != null) loadRecord(pending) else showNewMatchDialog()
+                else -> if (firstStart) { if (pending != null) askResume(pending) else showNewMatchDialog() }
+            }
         }
+    }
+
+    /** Al acabar un partido (porque alguien gana o se pulsa Terminar): ofrece volver a la portada. */
+    private fun showEndDialog() {
+        val r = current ?: return
+        val s = MatchSummary(r)
+        val title = if (match.state.finished) "🏆 Gana ${match.names[match.state.winner]}" else "⏹ Partido terminado"
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("${r.teamName(0)}  contra  ${r.teamName(1)}\n${s.result.ifEmpty { "0-0" }}\n\nEl partido ha quedado guardado.")
+            .setPositiveButton("Salir a la portada") { _, _ -> finish() }
+            .setNegativeButton("Ver marcador", null)
+            .show()
     }
 
     // ---------- Partidos guardados ----------
@@ -216,7 +238,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     closeAsUnfinished(r)
                     render()
                     say("Partido terminado")
-                    Toast.makeText(this, "Partido guardado como inacabado", Toast.LENGTH_SHORT).show()
+                    showEndDialog()
                 }
                 .setNegativeButton("Cancelar", null).show()
         }
@@ -289,8 +311,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 render()
                 say("Nuevo partido. ${rec.teamName(0)} contra ${rec.teamName(1)}")
             }
-        // La primera vez es obligatorio crear partido; después se puede cancelar y seguir con el actual.
-        if (current != null) dialog.setNegativeButton("Cancelar", null) else dialog.setCancelable(false)
+        // Cancelar: si hay un partido en curso se sigue con él; si no, se vuelve a la portada.
+        val keepGoing = current?.status == "en_curso" && pendingToClose == null
+        dialog.setNegativeButton("Cancelar") { _, _ -> if (!keepGoing) finish() }
+        dialog.setCancelable(false)
         dialog.show()
     }
 
@@ -627,6 +651,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val msg = match.point(team, source)
         persist()
         render()
+        if (match.state.finished) handler.postDelayed({ if (match.state.finished) showEndDialog() }, 1500)
         tone.startTone(if (team == 0) ToneGenerator.TONE_PROP_BEEP else ToneGenerator.TONE_PROP_ACK, 200)
         vibrate()
         say(msg)

@@ -133,10 +133,14 @@ class MatchStore(baseDir: File) {
 
     /**
      * Cuentan como jugados todos los partidos con algún punto (también los inacabados).
-     * Victorias/derrotas y ELO solo con partidos terminados.
      * ELO: empieza en 1500, K = 32, la fuerza de una pareja es la media de sus dos jugadores.
+     * Inacabados según [unfinishedMode]:
+     *   0 = no cuentan (ni victoria/derrota ni ELO)
+     *   1 = cuentan como victoria de la pareja que iba por delante (también en el ELO)
+     *   2 = proporción: no suman victoria/derrota, pero mueven el ELO con
+     *       resultado = % de juegos ganados y peso = juegos jugados / 18 (máx. 1)
      */
-    fun playerStats(): List<PlayerStats> {
+    fun playerStats(unfinishedMode: Int = 0): List<PlayerStats> {
         val map = LinkedHashMap<String, PlayerStats>()
         fun ps(n: String) = map.getOrPut(n) { PlayerStats(n) }
         for (rec in all()) {
@@ -144,21 +148,32 @@ class MatchStore(baseDir: File) {
             val sum = MatchSummary(rec)
             val team = arrayOf(listOf(ps(rec.players[0]), ps(rec.players[1])), listOf(ps(rec.players[2]), ps(rec.players[3])))
             val total = sum.pointsWon.sum()
+            val winner: Int? = when {
+                sum.state.finished -> sum.state.winner
+                unfinishedMode == 1 && sum.leader >= 0 -> sum.leader
+                else -> null
+            }
             for (t in 0..1) for (p in team[t]) {
                 p.played++
                 p.pointsWon += sum.pointsWon[t]; p.pointsPlayed += total
-                when {
-                    !sum.state.finished -> p.unfinished++
-                    sum.state.winner == t -> p.won++
+                when (winner) {
+                    null -> p.unfinished++
+                    t -> p.won++
                     else -> p.lost++
                 }
             }
-            if (sum.state.finished) {
+            // resultado (0..1 para A) y peso del partido en el ELO
+            val games = sum.gamesWon[0] + sum.gamesWon[1]
+            val score: Pair<Double, Double>? = when {
+                winner != null -> (if (winner == 0) 1.0 else 0.0) to 1.0
+                unfinishedMode == 2 && games > 0 -> (sum.gamesWon[0].toDouble() / games) to minOf(1.0, games / 18.0)
+                else -> null
+            }
+            if (score != null) {
                 val ra = team[0].map { it.elo }.average()
                 val rb = team[1].map { it.elo }.average()
                 val expA = 1.0 / (1.0 + 10.0.pow((rb - ra) / 400.0))
-                val scoreA = if (sum.state.winner == 0) 1.0 else 0.0
-                val delta = 32.0 * (scoreA - expA)
+                val delta = 32.0 * score.second * (score.first - expA)
                 team[0].forEach { it.elo += delta }
                 team[1].forEach { it.elo -= delta }
             }

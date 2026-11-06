@@ -1,6 +1,7 @@
 package com.padelpuntos.app
 
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.graphics.Typeface
 import android.net.Uri
@@ -27,11 +28,15 @@ class HistoryActivity : ComponentActivity() {
     private lateinit var list: ListView
     private lateinit var info: TextView
     private var showPlayers = false
+    private lateinit var unfinBtn: Button
+    private var unfinishedMode = 0   // 0 = no cuentan · 1 = gana quien iba por delante · 2 = proporción
+    private val unfinLabels = arrayOf("no cuentan", "gana quien iba por delante", "cuentan en proporción")
     private var shownMatches: List<MatchRecord> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = MatchStore(filesDir)
+        unfinishedMode = getSharedPreferences("padel", Context.MODE_PRIVATE).getInt("unfinishedMode", 0)
         val pad = dp(8)
 
         val root = LinearLayout(this).apply {
@@ -53,8 +58,17 @@ class HistoryActivity : ComponentActivity() {
             setTextColor(0xFFAAAAAA.toInt()); textSize = 13f; setPadding(pad, pad, pad, pad)
         }
         list = ListView(this)
+        unfinBtn = Button(this).apply {
+            textSize = 13f; isAllCaps = false
+            setOnClickListener {
+                unfinishedMode = (unfinishedMode + 1) % 3
+                getSharedPreferences("padel", Context.MODE_PRIVATE).edit().putInt("unfinishedMode", unfinishedMode).apply()
+                refresh()
+            }
+        }
 
         root.addView(bar)
+        root.addView(unfinBtn)
         root.addView(info)
         root.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
@@ -69,6 +83,8 @@ class HistoryActivity : ComponentActivity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun refresh() {
+        unfinBtn.text = "Inacabados: ${unfinLabels[unfinishedMode]}  (tocar para cambiar)"
+        unfinBtn.visibility = if (showPlayers) View.VISIBLE else View.GONE
         if (showPlayers) showPlayerStats() else showMatches()
     }
 
@@ -101,9 +117,14 @@ class HistoryActivity : ComponentActivity() {
 
     private fun showPlayerStats() {
         shownMatches = emptyList()
-        val stats = store.playerStats()
+        val stats = store.playerStats(unfinishedMode)
+        val how = when (unfinishedMode) {
+            1 -> "los inacabados cuentan como victoria de quien iba por delante"
+            2 -> "los inacabados mueven el ELO según el % de juegos y lo jugado"
+            else -> "los inacabados no cuentan"
+        }
         info.text = if (stats.isEmpty()) "Aún no hay estadísticas."
-        else "Ordenado por ELO (empieza en 1500; solo cuentan los partidos terminados).\n" +
+        else "Ordenado por ELO (empieza en 1500; $how).\n" +
             "J = jugados (incluye inacabados) · G = ganados · P = perdidos · I = inacabados"
         val rows = stats.mapIndexed { i, p ->
             "${i + 1}. ${p.name}   ·   ELO ${Math.round(p.elo)}\n" +

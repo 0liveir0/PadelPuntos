@@ -13,6 +13,11 @@ para decidir y muestra las pulsaciones contadas debajo de la cámara. Se emparej
 
 También se puede sumar tocando la franja de cada equipo, y el botón ↶ de la pantalla siempre anula.
 
+## Portada
+Al abrir la app aparece la portada con **INICIAR PARTIDA** (y **Continuar partido** si hay uno en curso, e **Historial**).
+Cuando un partido termina (porque alguien gana o con ⏹ Terminar) la app ofrece **Salir a la portada**.
+El botón Atrás del marcador también vuelve a la portada; el partido en curso queda guardado.
+
 ## Partidos
 - **Nuevo**: se introducen los 2 jugadores de cada pareja (con autocompletado), alias opcional y punto de oro.
 - El partido se **guarda tras cada punto**. Si se cierra la app, al volver pregunta si continuarlo.
@@ -31,7 +36,8 @@ También se puede sumar tocando la franja de cada equipo, y el botón ↶ de la 
 
 ## ELO (en la app)
 Empieza en 1500, K = 32. La fuerza de una pareja es la media de sus dos jugadores; ambos ganan o pierden los mismos puntos.
-Solo cuentan los partidos terminados. Los inacabados cuentan como jugados y en los puntos ganados.
+Inacabados (se elige en Historial → Jugadores): no cuentan · cuentan como victoria de quien iba por delante ·
+en **proporción** (resultado = % de juegos ganados, peso = juegos jugados / 18; un partido cortado al principio apenas mueve el ELO).
 
 ## Obtener el APK (GitHub)
 Sube el contenido de esta carpeta al repositorio → pestaña **Actions** → "Compilar APK" → **Artifacts** → `PadelPuntos-apk`.
