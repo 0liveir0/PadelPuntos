@@ -27,7 +27,7 @@ class HistoryActivity : ComponentActivity() {
     private lateinit var store: MatchStore
     private lateinit var list: ListView
     private lateinit var info: TextView
-    private var showPlayers = false
+    private var view = 0             // 0 = partidos · 1 = jugadores · 2 = parejas
     private lateinit var unfinBtn: Button
     private var unfinishedMode = 0   // 0 = no cuentan · 1 = gana quien iba por delante · 2 = proporción
     private val unfinLabels = arrayOf("no cuentan", "gana quien iba por delante", "cuentan en proporción")
@@ -50,9 +50,10 @@ class HistoryActivity : ComponentActivity() {
             setOnClickListener { f() }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        bar.addView(btn("Partidos") { showPlayers = false; refresh() })
-        bar.addView(btn("Jugadores") { showPlayers = true; refresh() })
-        bar.addView(btn("Exportar CSV") { export() })
+        bar.addView(btn("Partidos") { view = 0; refresh() })
+        bar.addView(btn("Jugadores") { view = 1; refresh() })
+        bar.addView(btn("Parejas") { view = 2; refresh() })
+        bar.addView(btn("Exportar") { export() })
 
         info = TextView(this).apply {
             setTextColor(0xFFAAAAAA.toInt()); textSize = 13f; setPadding(pad, pad, pad, pad)
@@ -74,7 +75,7 @@ class HistoryActivity : ComponentActivity() {
         setContentView(root)
 
         list.setOnItemLongClickListener { _, _, pos, _ ->
-            if (!showPlayers) shownMatches.getOrNull(pos)?.let { confirmDelete(it) }
+            if (view == 0) shownMatches.getOrNull(pos)?.let { confirmDelete(it) }
             true
         }
         refresh()
@@ -84,8 +85,8 @@ class HistoryActivity : ComponentActivity() {
 
     private fun refresh() {
         unfinBtn.text = "Inacabados: ${unfinLabels[unfinishedMode]}  (tocar para cambiar)"
-        unfinBtn.visibility = if (showPlayers) View.VISIBLE else View.GONE
-        if (showPlayers) showPlayerStats() else showMatches()
+        unfinBtn.visibility = if (view != 0) View.VISIBLE else View.GONE
+        when (view) { 1 -> showPlayerStats(); 2 -> showPairStats(); else -> showMatches() }
     }
 
     private fun showMatches() {
@@ -130,6 +131,31 @@ class HistoryActivity : ComponentActivity() {
             "${i + 1}. ${p.name}   ·   ELO ${Math.round(p.elo)}\n" +
                 "J ${p.played} · G ${p.won} · P ${p.lost} · I ${p.unfinished}\n" +
                 "${p.winPct}% victorias · ${p.pointsPct}% de puntos ganados"
+        }
+        list.adapter = adapter(rows)
+    }
+
+    private fun showPairStats() {
+        shownMatches = emptyList()
+        val stats = store.pairStats(unfinishedMode)
+        val min = MatchStore.MIN_PAIR_MATCHES
+        info.text = if (stats.isEmpty()) "Aún no hay estadísticas."
+        else "Clasificación por ELO de pareja (empieza en 1500). Para clasificar hacen falta $min partidos.\n" +
+            "J = jugados · G = ganados · P = perdidos · I = inacabados"
+        var rank = 0
+        var headerDone = false
+        val rows = mutableListOf<String>()
+        for (p in stats) {
+            val ranked = p.played >= min
+            if (!ranked && !headerDone) { rows.add("— Sin clasificar (menos de $min partidos) —"); headerDone = true }
+            val pos = if (ranked) "${++rank}. " else "· "
+            val alias = if (p.alias.isNotBlank()) "  “${p.alias}”" else ""
+            val dg = p.gamesWon - p.gamesLost
+            rows.add(
+                "$pos${p.name}$alias   ·   ELO ${Math.round(p.elo)}\n" +
+                    "J ${p.played} · G ${p.won} · P ${p.lost} · I ${p.unfinished} · ${p.winPct}% victorias\n" +
+                    "Juegos ${if (dg > 0) "+" else ""}$dg (${p.gamesWon}-${p.gamesLost}) · ${p.pointsPct}% de puntos"
+            )
         }
         list.adapter = adapter(rows)
     }

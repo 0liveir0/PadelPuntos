@@ -39,5 +39,9 @@ Empieza en 1500, K = 32. La fuerza de una pareja es la media de sus dos jugadore
 Inacabados (se elige en Historial → Jugadores): no cuentan · cuentan como victoria de quien iba por delante ·
 en **proporción** (resultado = % de juegos ganados, peso = juegos jugados / 18; un partido cortado al principio apenas mueve el ELO).
 
+## Clasificación de parejas
+Historial → **Parejas** (y pestaña Parejas de la web): ordenada por **ELO de pareja** (cada pareja empieza en 1500, K = 32).
+Para clasificar hacen falta 5 partidos; el resto aparece al final como "sin clasificar".
+
 ## Obtener el APK (GitHub)
 Sube el contenido de esta carpeta al repositorio → pestaña **Actions** → "Compilar APK" → **Artifacts** → `PadelPuntos-apk`.

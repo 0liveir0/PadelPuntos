@@ -102,8 +102,20 @@ class PlayerStats(val name: String) {
     val pointsPct get() = if (pointsPlayed == 0) 0 else Math.round(100.0 * pointsWon / pointsPlayed).toInt()
 }
 
+/** Estadística acumulada de una pareja (los dos nombres, sin importar el orden). */
+class PairStats(val players: List<String>) {
+    val name get() = players.joinToString(" / ")
+    var alias = ""
+    var played = 0; var won = 0; var lost = 0; var unfinished = 0
+    var gamesWon = 0; var gamesLost = 0; var pointsWon = 0; var pointsPlayed = 0
+    var elo = 1500.0
+    val winPct get() = if (won + lost == 0) 0 else Math.round(100.0 * won / (won + lost)).toInt()
+    val pointsPct get() = if (pointsPlayed == 0) 0 else Math.round(100.0 * pointsWon / pointsPlayed).toInt()
+}
+
 /** Guarda cada partido en un fichero JSON propio dentro de la memoria interna de la app. */
 class MatchStore(baseDir: File) {
+    companion object { const val MIN_PAIR_MATCHES = 5 }
     private val dir = File(baseDir, "partidos").apply { mkdirs() }
 
     private fun file(id: Int) = File(dir, "$id.json")
@@ -179,6 +191,49 @@ class MatchStore(baseDir: File) {
             }
         }
         return map.values.sortedByDescending { it.elo }
+    }
+
+    /**
+     * Clasificación de parejas por ELO de pareja (empieza en 1500, K = 32), con la misma regla de
+     * inacabados que [playerStats]. Las parejas con menos de [minMatches] partidos van al final, sin clasificar.
+     */
+    fun pairStats(unfinishedMode: Int = 0): List<PairStats> {
+        val map = LinkedHashMap<String, PairStats>()
+        fun pair(a: String, b: String): PairStats {
+            val ps = listOf(a, b).sortedBy { it.lowercase() }
+            return map.getOrPut(ps.joinToString("|")) { PairStats(ps) }
+        }
+        for (rec in all()) {
+            if (rec.points.isEmpty()) continue
+            val sum = MatchSummary(rec)
+            val pr = arrayOf(pair(rec.players[0], rec.players[1]), pair(rec.players[2], rec.players[3]))
+            val winner: Int? = when {
+                sum.state.finished -> sum.state.winner
+                unfinishedMode == 1 && sum.leader >= 0 -> sum.leader
+                else -> null
+            }
+            val total = sum.pointsWon.sum()
+            for (t in 0..1) {
+                val p = pr[t]
+                p.played++
+                p.gamesWon += sum.gamesWon[t]; p.gamesLost += sum.gamesWon[1 - t]
+                p.pointsWon += sum.pointsWon[t]; p.pointsPlayed += total
+                when (winner) { null -> p.unfinished++; t -> p.won++; else -> p.lost++ }
+                if (rec.aliases[t].isNotBlank()) p.alias = rec.aliases[t]
+            }
+            val games = sum.gamesWon[0] + sum.gamesWon[1]
+            val score: Pair<Double, Double>? = when {
+                winner != null -> (if (winner == 0) 1.0 else 0.0) to 1.0
+                unfinishedMode == 2 && games > 0 -> (sum.gamesWon[0].toDouble() / games) to minOf(1.0, games / 18.0)
+                else -> null
+            }
+            if (score != null) {
+                val expA = 1.0 / (1.0 + 10.0.pow((pr[1].elo - pr[0].elo) / 400.0))
+                val delta = 32.0 * score.second * (score.first - expA)
+                pr[0].elo += delta; pr[1].elo -= delta
+            }
+        }
+        return map.values.sortedWith(compareByDescending<PairStats> { it.played >= MIN_PAIR_MATCHES }.thenByDescending { it.elo })
     }
 
     // ---------- Exportación CSV ----------
